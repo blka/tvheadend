@@ -106,7 +106,7 @@ satip_server_http_xml(http_connection_t *hc)
 </iconList>\n\
 <presentationURL>http://%s:%d</presentationURL>\n\
 <satip:X_SATIPCAP xmlns:satip=\"urn:ses-com:satip\">%s</satip:X_SATIPCAP>\n\
-<satip:X_SATIPM3U xmlns:satip=\"urn:ses-com:satip\">/playlist/satip/channels</satip:X_SATIPM3U>\n\
+%s\
 </device>\n\
 </root>\n"
 
@@ -177,7 +177,7 @@ satip_server_http_xml(http_connection_t *hc)
   htsbuf_queue_flush(&q);
 
   if (devicelist == NULL || devicelist[0] == '\0') {
-    tvhwarn("satips", "SAT>IP server announces an empty tuner list to a client %s (missing %s)",
+    tvhwarn(LS_SATIPS, "SAT>IP server announces an empty tuner list to a client %s (missing %s)",
             hc->hc_peer_ipstr, !tuners ? "tuner settings - global config" : "network assignment");
   }
 
@@ -195,7 +195,9 @@ satip_server_http_xml(http_connection_t *hc)
            http_server_ip, http_server_port,
            http_server_ip, http_server_port,
            http_server_ip, http_server_port,
-           devicelist ?: "");
+           devicelist ?: "",
+           satip_server_conf.satip_nom3u ? "" :
+             "<satip:X_SATIPM3U xmlns:satip=\"urn:ses-com:satip\">/playlist/satip/channels</satip:X_SATIPM3U>\n");
 
   free(devicelist);
 
@@ -252,7 +254,7 @@ CONFIGID.UPNP.ORG: 0\r\n\
   if (satips_upnp_discovery == NULL || satip_server_rtsp_port <= 0)
     return;
 
-  tvhtrace("satips", "sending byebye");
+  tvhtrace(LS_SATIPS, "sending byebye");
 
   for (attempt = 1; attempt <= 3; attempt++) {
     switch (attempt) {
@@ -308,7 +310,7 @@ DEVICEID.SES.COM: %d\r\n\r\n"
   if (satips_upnp_discovery == NULL || satip_server_rtsp_port <= 0)
     return;
 
-  tvhtrace("satips", "sending announce");
+  tvhtrace(LS_SATIPS, "sending announce");
 
   for (attempt = 1; attempt <= 3; attempt++) {
     switch (attempt) {
@@ -365,8 +367,8 @@ CONFIGID.UPNP.ORG: 0\r\n"
     return;
 
   if (tvhtrace_enabled()) {
-    tcp_get_str_from_ip((struct sockaddr *)dst, buf, sizeof(buf));
-    tvhtrace("satips", "sending discover reply to %s:%d%s%s",
+    tcp_get_str_from_ip(dst, buf, sizeof(buf));
+    tvhtrace(LS_SATIPS, "sending discover reply to %s:%d%s%s",
              buf, ntohs(IP_PORT(*dst)), deviceid ? " device: " : "", deviceid ?: "");
   }
 
@@ -470,8 +472,8 @@ satips_upnp_discovery_received
     return;
 
   if (tvhtrace_enabled()) {
-    tcp_get_str_from_ip((struct sockaddr *)storage, buf2, sizeof(buf2));
-    tvhtrace("satips", "received %s M-SEARCH from %s:%d",
+    tcp_get_str_from_ip(storage, buf2, sizeof(buf2));
+    tvhtrace(LS_SATIPS, "received %s M-SEARCH from %s:%d",
              conn->multicast ? "multicast" : "unicast",
              buf2, ntohs(IP_PORT(*storage)));
   }
@@ -482,8 +484,8 @@ satips_upnp_discovery_received
       satip_server_deviceid += 1;
       if (satip_server_deviceid >= 254)
         satip_server_deviceid = 1;
-      tcp_get_str_from_ip((struct sockaddr *)storage, buf2, sizeof(buf2));
-      tvhwarn("satips", "received duplicate SAT>IP DeviceID %s from %s:%d, using %d",
+      tcp_get_str_from_ip(storage, buf2, sizeof(buf2));
+      tvhwarn(LS_SATIPS, "received duplicate SAT>IP DeviceID %s from %s:%d, using %d",
               deviceid, buf2, ntohs(IP_PORT(*storage)), satip_server_deviceid);
       satips_upnp_send_discover_reply(storage, deviceid, 0);
       satips_upnp_send_byebye();
@@ -511,7 +513,7 @@ static void satips_rtsp_port(int def)
   if (!satip_server_rtsp_port_locked)
     rtsp_port = satip_server_conf.satip_rtsp > 0 ? satip_server_conf.satip_rtsp : def;
   if (getuid() != 0 && rtsp_port > 0 && rtsp_port < 1024) {
-    tvherror("satips", "RTSP port %d specified but no root perms, using 9983", rtsp_port);
+    tvherror(LS_SATIPS, "RTSP port %d specified but no root perms, using 9983", rtsp_port);
     rtsp_port = 9983;
   }
   satip_server_rtsp_port = rtsp_port;
@@ -527,16 +529,20 @@ static void satip_server_info(const char *prefix, int descramble, int muxcnf)
   int fe, findex;
   const char *ftype;
 
-  tvhinfo("satips", "SAT>IP Server %sinitialized", prefix);
-  tvhinfo("satips", "  HTTP %s:%d, RTSP %s:%d",
+  if (satip_server_rtsp_port <= 0) {
+    tvhinfo(LS_SATIPS, "SAT>IP Server inactive");
+    return;
+  }
+  tvhinfo(LS_SATIPS, "SAT>IP Server %sinitialized", prefix);
+  tvhinfo(LS_SATIPS, "  HTTP %s:%d, RTSP %s:%d",
               http_server_ip, http_server_port,
               http_server_ip, satip_server_rtsp_port);
-  tvhinfo("satips", "  descramble %d, muxcnf %d",
+  tvhinfo(LS_SATIPS, "  descramble %d, muxcnf %d",
               descramble, muxcnf);
   for (fe = 1; fe <= 128; fe++) {
     if (satip_rtsp_delsys(fe, &findex, &ftype) == DVB_TYPE_NONE)
       break;
-    tvhinfo("satips", "  tuner[fe=%d]: %s #%d", fe, ftype, findex);
+    tvhinfo(LS_SATIPS, "  tuner[fe=%d]: %s #%d", fe, ftype, findex);
   }
 }
 
@@ -667,8 +673,17 @@ const idclass_t satip_server_class = {
       .id     = "satip_nat_ip",
       .name   = N_("External IP (NAT)"),
       .desc   = N_("Enter external IP if behind Network address "
-                   "translation (NAT)."),
+                   "translation (NAT). Asterisk (*) means accept all IP addresses."),
       .off    = offsetof(struct satip_server_conf, satip_nat_ip),
+      .opts   = PO_EXPERT,
+      .group  = 1,
+    },
+    {
+      .type   = PT_BOOL,
+      .id     = "satip_nom3u",
+      .name   = N_("Disable X_SATIPM3U tag"),
+      .desc   = N_("Do not send X_SATIPM3U information in the XML description to clients."),
+      .off    = offsetof(struct satip_server_conf, satip_nom3u),
       .opts   = PO_EXPERT,
       .group  = 1,
     },
@@ -750,22 +765,22 @@ static void satip_server_init_common(const char *prefix, int announce)
   int descramble, rewrite_pmt, muxcnf;
   char *nat_ip;
 
+  if (satip_server_rtsp_port <= 0)
+    return;
+
   if (http_server_ip == NULL) {
     if (tcp_server_onall(http_server) && satip_server_bindaddr == NULL) {
-      tvherror("satips", "use --satip_bindaddr parameter to select the local IP for SAT>IP");
-      tvherror("satips", "using Google lookup (might block the task until timeout)");
+      tvherror(LS_SATIPS, "use --satip_bindaddr parameter to select the local IP for SAT>IP");
+      tvherror(LS_SATIPS, "using Google lookup (might block the task until timeout)");
     }
     if (tcp_server_bound(http_server, &http, PF_INET) < 0) {
-      tvherror("satips", "Unable to determine the HTTP/RTSP address");
+      tvherror(LS_SATIPS, "Unable to determine the HTTP/RTSP address");
       return;
     }
-    tcp_get_str_from_ip((const struct sockaddr *)&http, http_ip, sizeof(http_ip));
+    tcp_get_str_from_ip(&http, http_ip, sizeof(http_ip));
     http_server_ip = strdup(satip_server_bindaddr ?: http_ip);
     http_server_port = ntohs(IP_PORT(http));
   }
-
-  if (satip_server_rtsp_port <= 0)
-    return;
 
   descramble = satip_server_conf.satip_descramble;
   rewrite_pmt = satip_server_conf.satip_rewrite_pmt;
@@ -802,7 +817,7 @@ static void satip_server_save(void)
       satip_server_init_common("re", 1);
     } else {
       pthread_mutex_unlock(&global_lock);
-      tvhinfo("satips", "SAT>IP Server shutdown");
+      tvhinfo(LS_SATIPS, "SAT>IP Server shutdown");
       satip_server_rtsp_done();
       satips_upnp_send_byebye();
       pthread_mutex_lock(&global_lock);
@@ -859,7 +874,7 @@ void satip_server_register(void)
   if (satip_server_conf.satip_uuid == NULL) {
     /* This is not UPnP complaint UUID */
     if (uuid_init_bin(&u, NULL)) {
-      tvherror("satips", "Unable to create UUID");
+      tvherror(LS_SATIPS, "Unable to create UUID");
       return;
     }
     bin2hex(uu +  0, 9,  u.bin,      4); uu[ 8] = '-';
@@ -876,7 +891,7 @@ void satip_server_register(void)
 
   satips_upnp_discovery = upnp_service_create(upnp_service);
   if (satips_upnp_discovery == NULL) {
-    tvherror("satips", "unable to create UPnP discovery service");
+    tvherror(LS_SATIPS, "unable to create UPnP discovery service");
   } else {
     satips_upnp_discovery->us_received = satips_upnp_discovery_received;
     satips_upnp_discovery->us_destroy  = satips_upnp_discovery_destroy;

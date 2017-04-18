@@ -74,9 +74,14 @@ channel_class_changed ( idnode_t *self )
 {
   channel_t *ch = (channel_t *)self;
 
+  tvhdebug(LS_CHANNEL, "channel '%s' changed", channel_get_name(ch));
+
   /* update the EPG channel <-> channel mapping here */
   if (ch->ch_enabled && ch->ch_epgauto)
     epggrab_channel_add(ch);
+
+  /* HTSP */
+  htsp_channel_update(ch);
 }
 
 static htsmsg_t *
@@ -87,6 +92,7 @@ channel_class_save ( idnode_t *self, char *filename, size_t fsize )
   char ubuf[UUID_HEX_SIZE];
   /* save channel (on demand) */
   if (ch->ch_dont_save == 0) {
+    tvhdebug(LS_CHANNEL, "channel '%s' save", channel_get_name(ch));
     c = htsmsg_create_map();
     idnode_save(&ch->ch_id, c);
     snprintf(filename, fsize, "channel/config/%s", idnode_uuid_as_str(&ch->ch_id, ubuf));
@@ -359,6 +365,7 @@ channel_class_epg_running_list ( void *o, const char *lang )
 }
 
 CLASS_DOC(channel)
+PROP_DOC(runningstate)
 
 const idclass_t channel_class = {
   .ic_class      = "channel",
@@ -375,6 +382,7 @@ const idclass_t channel_class = {
       .id       = "enabled",
       .name     = N_("Enabled"),
       .desc     = N_("Enable/disable the channel."),
+      .def.i    = 1,
       .off      = offsetof(channel_t, ch_enabled),
     },
     {
@@ -438,6 +446,7 @@ const idclass_t channel_class = {
                      "turn this option off, only the OTA EPG grabber "
                      "will be used for this channel unless you've "
                      "specifically set a different EPG Source."),
+      .def.i    = 1,
       .off      = offsetof(channel_t, ch_epgauto),
       .opts     = PO_ADVANCED,
     },
@@ -484,12 +493,11 @@ const idclass_t channel_class = {
       .name     = N_("Use EPG running state"),
       .desc     = N_("Use EITp/f to decide "
                      "event start/stop. This is also known as "
-                     "\"Accurate Recording\". Note that this can have "
-                     "unexpected results if the broadcaster isn't very "
-                     "good at time keeping."),
+                     "\"Accurate Recording\". See Help for details."),
+      .doc      = prop_doc_runningstate,
       .off      = offsetof(channel_t, ch_epg_running),
       .list     = channel_class_epg_running_list,
-      .opts     = PO_ADVANCED | PO_DOC_NLIST,
+      .opts     = PO_EXPERT | PO_DOC_NLIST,
     },
     {
       .type     = PT_STR,
@@ -501,7 +509,6 @@ const idclass_t channel_class = {
       .set      = channel_class_services_set,
       .list     = channel_class_services_enum,
       .rend     = channel_class_services_rend,
-      .opts     = PO_ADVANCED
     },
     {
       .type     = PT_STR,
@@ -700,12 +707,17 @@ channel_get_number ( channel_t *ch )
   if (ch->ch_number) {
     n = ch->ch_number;
   } else {
-    LIST_FOREACH(ilm, &ch->ch_services, ilm_in2_link) {
-      if (ch->ch_bouquet &&
-          (n = bouquet_get_channel_number(ch->ch_bouquet, (service_t *)ilm->ilm_in1)))
-        break;
-      if ((n = service_get_channel_number((service_t *)ilm->ilm_in1)))
-        break;
+    if (ch->ch_bouquet) {
+      LIST_FOREACH(ilm, &ch->ch_services, ilm_in2_link) {
+        if ((n = bouquet_get_channel_number(ch->ch_bouquet, (service_t *)ilm->ilm_in1)))
+          break;
+      }
+    }
+    if (n == 0) {
+      LIST_FOREACH(ilm, &ch->ch_services, ilm_in2_link) {
+        if ((n = service_get_channel_number((service_t *)ilm->ilm_in1)))
+          break;
+      }
     }
   }
   if (n) {
@@ -976,12 +988,12 @@ channel_create0
 
   if (idnode_insert(&ch->ch_id, uuid, idc, IDNODE_SHORT_UUID)) {
     if (uuid)
-      tvherror("channel", "invalid uuid '%s'", uuid);
+      tvherror(LS_CHANNEL, "invalid uuid '%s'", uuid);
     free(ch);
     return NULL;
   }
   if (RB_INSERT_SORTED(&channels, ch, ch_link, ch_id_cmp)) {
-    tvherror("channel", "id collision!");
+    tvherror(LS_CHANNEL, "id collision!");
     abort();
   }
 
@@ -1028,7 +1040,7 @@ channel_delete ( channel_t *ch, int delconf )
   idnode_save_check(&ch->ch_id, delconf);
 
   if (delconf)
-    tvhinfo("channel", "%s - deleting", channel_get_name(ch));
+    tvhinfo(LS_CHANNEL, "%s - deleting", channel_get_name(ch));
 
   /* Tags */
   while((ilm = LIST_FIRST(&ch->ch_ctms)) != NULL)
@@ -1052,9 +1064,14 @@ channel_delete ( channel_t *ch, int delconf )
   /* EPG */
   epggrab_channel_rem(ch);
   epg_channel_unlink(ch);
+  if (ch->ch_epg_parent) {
+    LIST_SAFE_REMOVE(ch, ch_epg_slave_link);
+    free(ch->ch_epg_parent);
+    ch->ch_epg_parent = NULL;
+  }
   for (ch1 = LIST_FIRST(&ch->ch_epg_slaves); ch1; ch1 = ch2) {
     ch2 = LIST_NEXT(ch1, ch_epg_slave_link);
-    LIST_REMOVE(ch1, ch_epg_slave_link);
+    LIST_SAFE_REMOVE(ch1, ch_epg_slave_link);
     if (delconf) {
       free(ch1->ch_epg_parent);
       ch1->ch_epg_parent = NULL;
@@ -1241,7 +1258,7 @@ channel_tag_create(const char *uuid, htsmsg_t *conf)
 
   if (idnode_insert(&ct->ct_id, uuid, &channel_tag_class, IDNODE_SHORT_UUID)) {
     if (uuid)
-      tvherror("channel", "invalid tag uuid '%s'", uuid);
+      tvherror(LS_CHANNEL, "invalid tag uuid '%s'", uuid);
     free(ct);
     return NULL;
   }
@@ -1249,12 +1266,16 @@ channel_tag_create(const char *uuid, htsmsg_t *conf)
   if (conf)
     idnode_load(&ct->ct_id, conf);
 
+  /* Defaults */
   if (ct->ct_name == NULL)
     ct->ct_name = strdup("New tag");
   if (ct->ct_comment == NULL)
     ct->ct_comment = strdup("");
   if (ct->ct_icon == NULL)
     ct->ct_icon = strdup("");
+
+  /* HTSP */
+  htsp_tag_add(ct);
 
   TAILQ_INSERT_TAIL(&channel_tags, ct, ct_link);
   return ct;
@@ -1277,8 +1298,8 @@ channel_tag_destroy(channel_tag_t *ct, int delconf)
   if (delconf)
     hts_settings_remove("channel/tag/%s", idnode_uuid_as_str(&ct->ct_id, ubuf));
 
-  if(ct->ct_enabled && !ct->ct_internal)
-    htsp_tag_delete(ct);
+  /* HTSP */
+  htsp_tag_delete(ct);
 
   TAILQ_REMOVE(&channel_tags, ct, ct_link);
   idnode_unlink(&ct->ct_id);
@@ -1345,6 +1366,13 @@ chtags_ok:
  * Channel Tag Class definition
  * **************************************************************************/
 
+static void
+channel_tag_class_changed(idnode_t *self)
+{
+  /* HTSP */
+  htsp_tag_update((channel_tag_t *)self);
+}
+
 static htsmsg_t *
 channel_tag_class_save(idnode_t *self, char *filename, size_t fsize)
 {
@@ -1353,7 +1381,6 @@ channel_tag_class_save(idnode_t *self, char *filename, size_t fsize)
   char ubuf[UUID_HEX_SIZE];
   idnode_save(&ct->ct_id, c);
   snprintf(filename, fsize, "channel/tag/%s", idnode_uuid_as_str(&ct->ct_id, ubuf));
-  htsp_tag_update(ct);
   return c;
 }
 
@@ -1405,6 +1432,7 @@ const idclass_t channel_tag_class = {
   .ic_caption    = N_("Channel Tags"),
   .ic_doc        = tvh_doc_channeltag_class,
   .ic_event      = "channeltag",
+  .ic_changed    = channel_tag_class_changed,
   .ic_save       = channel_tag_class_save,
   .ic_get_title  = channel_tag_class_get_title,
   .ic_delete     = channel_tag_class_delete,
@@ -1414,6 +1442,7 @@ const idclass_t channel_tag_class = {
       .id       = "enabled",
       .name     = N_("Enabled"),
       .desc     = N_("Enable/disable the tag."),
+      .def.i    = 1,
       .off      = offsetof(channel_tag_t, ct_enabled),
     },
     {
@@ -1447,7 +1476,7 @@ const idclass_t channel_tag_class = {
                      "no tags at all) set in "
                      "access configuration to use the tag."),
       .off      = offsetof(channel_tag_t, ct_private),
-      .opts     = PO_ADVANCED
+      .opts     = PO_EXPERT
     },
     {
       .type     = PT_STR,
@@ -1474,7 +1503,7 @@ const idclass_t channel_tag_class = {
       .desc     = N_("If set, presentation of the tag icon will not "
                      "superimpose the tag name on top of the icon."),
       .off      = offsetof(channel_tag_t, ct_titled_icon),
-      .opts     = PO_ADVANCED
+      .opts     = PO_EXPERT
     },
     {
       .type     = PT_STR,

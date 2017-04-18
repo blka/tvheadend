@@ -133,7 +133,7 @@ linuxdvb_adapter_is_enabled ( linuxdvb_adapter_t *la )
 {
   linuxdvb_frontend_t *lfe;
   LIST_FOREACH(lfe, &la->la_frontends, lfe_link) {
-    if (lfe->mi_is_enabled((mpegts_input_t*)lfe, NULL, 0, -1))
+    if (lfe->mi_is_enabled((mpegts_input_t*)lfe, NULL, 0, -1) != MI_IS_ENABLED_NEVER)
       return 1;
   }
   return 0;
@@ -176,7 +176,7 @@ linuxdvb_adapter_create
  */
 static linuxdvb_adapter_t *
 linuxdvb_adapter_new(const char *path, int a, const char *name,
-                     htsmsg_t **conf, int *save)
+                     const char *display_name, htsmsg_t **conf, int *save)
 {
   linuxdvb_adapter_t *la;
   SHA_CTX sha1;
@@ -196,13 +196,13 @@ linuxdvb_adapter_new(const char *path, int a, const char *name,
     *save = 1;
 
   /* Create */
-  if (!(la = linuxdvb_adapter_create(uuid.hex, *conf, path, a, name))) {
+  if (!(la = linuxdvb_adapter_create(uuid.hex, *conf, path, a, display_name))) {
     htsmsg_destroy(*conf);
     *conf = NULL;
     return NULL;
   }
 
-  tvhinfo("linuxdvb", "adapter added %s", path);
+  tvhinfo(LS_LINUXDVB, "adapter added %s", path);
   return la;
 }
 
@@ -278,7 +278,7 @@ linuxdvb_adapter_add ( const char *path )
 #define MAX_DEV_OPEN_ATTEMPTS 20
   extern int linuxdvb_adapter_mask;
   int a, i, j, r, fd;
-  char fe_path[512], dmx_path[512], dvr_path[512];
+  char fe_path[512], dmx_path[512], dvr_path[512], name[132];
 #if ENABLE_LINUXDVB_CA
   char ca_path[512];
   htsmsg_t *caconf = NULL;
@@ -326,7 +326,7 @@ linuxdvb_adapter_add ( const char *path )
       tvh_safe_usleep(100000);
     }
     if (fd < 0) {
-      tvhlog(LOG_ERR, "linuxdvb", "unable to open %s", fe_path);
+      tvherror(LS_LINUXDVB, "unable to open %s", fe_path);
       continue;
     }
 #if DVB_VER_ATLEAST(5,5)
@@ -335,12 +335,13 @@ linuxdvb_adapter_add ( const char *path )
     r = ioctl(fd, FE_GET_INFO, &dfi);
     close(fd);
     if(r) {
-      tvhlog(LOG_ERR, "linuxdvb", "unable to query %s", fe_path);
+      tvherror(LS_LINUXDVB, "unable to query %s", fe_path);
       continue;
     }
+    snprintf(name, sizeof(name), "%s #%d", dfi.name, a);
     type = linuxdvb_get_type(dfi.type);
     if (type == DVB_TYPE_NONE) {
-      tvhlog(LOG_ERR, "linuxdvb", "unable to determine FE type %s - %i", fe_path, dfi.type);
+      tvherror(LS_LINUXDVB, "unable to determine FE type %s - %i", fe_path, dfi.type);
       continue;
     }
 
@@ -360,9 +361,9 @@ linuxdvb_adapter_add ( const char *path )
     /* Create/Find adapter */
     pthread_mutex_lock(&global_lock);
     if (!la) {
-      la = linuxdvb_adapter_new(path, a, dfi.name, &conf, &save);
+      la = linuxdvb_adapter_new(path, a, dfi.name, name, &conf, &save);
       if (la == NULL) {
-        tvhlog(LOG_ERR, "linuxdvb", "failed to create %s", path);
+        tvherror(LS_LINUXDVB, "failed to create %s", path);
         return; // Note: save to return here as global_lock is held
       }
       if (conf)
@@ -391,15 +392,15 @@ linuxdvb_adapter_add ( const char *path )
 
       /* Create */
       linuxdvb_frontend_create(feconf, la, i, fe_path, dmx_path, dvr_path,
-                               type5, dfi.name);
+                               type5, name);
       fetypes[type5] = 1;
       fenum++;
     }
     if (fenum == 0)
       linuxdvb_frontend_create(feconf, la, i, fe_path, dmx_path, dvr_path,
-                               type, dfi.name);
+                               type, name);
 #else
-    linuxdvb_frontend_create(feconf, la, i, fe_path, dmx_path, dvr_path, type, dfi.name);
+    linuxdvb_frontend_create(feconf, la, i, fe_path, dmx_path, dvr_path, type, name);
 #endif
     pthread_mutex_unlock(&global_lock);
   }
@@ -416,22 +417,23 @@ linuxdvb_adapter_add ( const char *path )
       tvh_safe_usleep(100000);
     }
     if (fd < 0) {
-      tvhlog(LOG_ERR, "linuxdvb", "unable to open %s", ca_path);
+      tvherror(LS_LINUXDVB, "unable to open %s", ca_path);
       continue;
     }
     r = ioctl(fd, CA_RESET, NULL);
     close(fd);
     if(r) {
-      tvhlog(LOG_ERR, "linuxdvb", "unable to query %s", ca_path);
+      tvherror(LS_LINUXDVB, "unable to query %s", ca_path);
       continue;
     }
 
     pthread_mutex_lock(&global_lock);
 
     if (!la) {
-      la = linuxdvb_adapter_new(path, a, ca_path, &conf, &save);
+      snprintf(name, sizeof(name), "CAM #%d", i);
+      la = linuxdvb_adapter_new(path, a, ca_path, name, &conf, &save);
       if (la == NULL) {
-        tvhlog(LOG_ERR, "linuxdvb", "failed to create %s", path);
+        tvherror(LS_LINUXDVB, "failed to create %s", path);
         return; // Note: save to return here as global_lock is held
       }
     }
@@ -469,12 +471,13 @@ linuxdvb_adapter_add ( const char *path )
     la->la_exclusive = 1;
     for (i = 0; i < ARRAY_SIZE(fetypes); i++)
       if (fetypes[i] > 0)
-        tvhwarn("linuxdvb", "adapter %d has tuner count %d for type %s (wrong config)",
+        tvhwarn(LS_LINUXDVB, "adapter %d has tuner count %d for type %s (wrong config)",
                             a, fetypes[i], dvb_type2str(i));
   } else if (!r && j > 1) {
     la->la_exclusive = 1;
-    tvhinfo("linuxdvb", "adapter %d setting exlusive flag", a);
   }
+  if (la->la_exclusive)
+    tvhinfo(LS_LINUXDVB, "adapter %d setting exclusive flag", a);
 #endif
 
   /* Save configuration */
@@ -554,7 +557,7 @@ devdvb_create ( fsmonitor_t *fsm, const char *path )
 static void
 devdvb_delete ( fsmonitor_t *fsm, const char *path )
 {
-  tvhinfo("linuxdvb", "adapter removed %s", path);
+  tvhinfo(LS_LINUXDVB, "adapter removed %s", path);
   linuxdvb_adapter_del(path);
 }
 

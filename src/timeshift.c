@@ -38,6 +38,9 @@ static int timeshift_index = 0;
 
 struct timeshift_conf timeshift_conf;
 
+memoryinfo_t timeshift_memoryinfo = { .my_name = "Timeshift" };
+memoryinfo_t timeshift_memoryinfo_ram = { .my_name = "Timeshift RAM buffer" };
+
 /*
  * Packet log
  */
@@ -46,12 +49,12 @@ timeshift_packet_log0
   ( const char *source, timeshift_t *ts, streaming_message_t *sm )
 {
   th_pkt_t *pkt = sm->sm_data;
-  tvhtrace("timeshift",
+  tvhtrace(LS_TIMESHIFT,
            "ts %d pkt %s - stream %d type %c pts %10"PRId64
            " dts %10"PRId64" dur %10d len %6zu time %14"PRId64,
            ts->id, source,
            pkt->pkt_componentindex,
-           pkt_frametype_to_char(pkt->pkt_frametype),
+           SCT_ISVIDEO(pkt->pkt_type) ? pkt_frametype_to_char(pkt->v.pkt_frametype) : '-',
            ts_rescale(pkt->pkt_pts, 1000000),
            ts_rescale(pkt->pkt_dts, 1000000),
            pkt->pkt_duration,
@@ -74,6 +77,9 @@ static void timeshift_fixup ( void )
 void timeshift_init ( void )
 {
   htsmsg_t *m;
+
+  memoryinfo_register(&timeshift_memoryinfo);
+  memoryinfo_register(&timeshift_memoryinfo_ram);
 
   timeshift_filemgr_init();
 
@@ -101,6 +107,9 @@ void timeshift_term ( void )
   timeshift_filemgr_term();
   free(timeshift_conf.path);
   timeshift_conf.path = NULL;
+
+  memoryinfo_unregister(&timeshift_memoryinfo);
+  memoryinfo_unregister(&timeshift_memoryinfo_ram);
 }
 
 /*
@@ -182,7 +191,7 @@ const idclass_t timeshift_conf_class = {
       .type   = PT_BOOL,
       .id     = "enabled",
       .name   = N_("Enabled"),
-      .desc   = N_("Enable/disable timeshift."),
+      .desc   = N_("Enable/Disable timeshift."),
       .off    = offsetof(timeshift_conf_t, enabled),
     },
     {
@@ -197,6 +206,7 @@ const idclass_t timeshift_conf_class = {
                    "because there is no buffer on the first request "
                    "rewinding is not possible at that point."),
       .off    = offsetof(timeshift_conf_t, ondemand),
+      .opts   = PO_EXPERT,
     },
     {
       .type   = PT_STR,
@@ -206,6 +216,7 @@ const idclass_t timeshift_conf_class = {
                    "If nothing is specified this will default to "
                    "CONF_DIR/timeshift/buffer."),
       .off    = offsetof(timeshift_conf_t, path),
+      .opts   = PO_ADVANCED,
     },
     {
       .type   = PT_U32,
@@ -224,6 +235,7 @@ const idclass_t timeshift_conf_class = {
                    "enabling this option may cause your system to slow "
                    "down or crash completely!"),
       .off    = offsetof(timeshift_conf_t, unlimited_period),
+      .opts   = PO_EXPERT,
     },
     {
       .type   = PT_S64,
@@ -234,6 +246,7 @@ const idclass_t timeshift_conf_class = {
                    "recommended you specify a value here."),
       .set    = timeshift_conf_class_max_size_set,
       .get    = timeshift_conf_class_max_size_get,
+      .opts   = PO_ADVANCED,
     },
     {
       .type   = PT_S64,
@@ -245,6 +258,7 @@ const idclass_t timeshift_conf_class = {
                    "storage."),
       .set    = timeshift_conf_class_ram_size_set,
       .get    = timeshift_conf_class_ram_size_get,
+      .opts   = PO_ADVANCED,
     },
     {
       .type   = PT_BOOL,
@@ -254,21 +268,38 @@ const idclass_t timeshift_conf_class = {
                    "potentially grow unbounded until your storage media "
                    "runs out of space."),
       .off    = offsetof(timeshift_conf_t, unlimited_size),
+      .opts   = PO_EXPERT,
     },
     {
       .type   = PT_BOOL,
       .id     = "ram_only",
       .name   = N_("RAM only"),
-      .desc   = N_("Only use system RAM for timeshift buffers."),
+      .desc   = N_("Keep timeshift buffers in RAM only. "
+                   "With this option enabled, the amount of rewind time "
+                   "is limited by how much RAM Tvheadend is allowed."),
       .off    = offsetof(timeshift_conf_t, ram_only),
+      .opts   = PO_ADVANCED,
     },
     {
       .type   = PT_BOOL,
       .id     = "ram_fit",
       .name   = N_("Fit to RAM (cut rewind)"),
-      .desc   = N_("If possible, maintain the timeshift data in the server memory only. "
-                   "This may reduce the amount of allowed rewind time."),
+      .desc   = N_("With \"RAM only\" enabled, and when \"Maximum RAM "
+                   "size\" is reached, remove the oldest segment in the "
+                   "buffer instead of replacing it completely. Note, "
+                   "this may reduce the amount of rewind time."),
       .off    = offsetof(timeshift_conf_t, ram_fit),
+      .opts   = PO_EXPERT,
+    },
+    {
+      .type   = PT_BOOL,
+      .id     = "teletext",
+      .name   = N_("Include teletext"),
+      .desc   = N_("Include teletext in the timeshift buffer. Enabling "
+                   "this may cause issues with some services where the "
+                   "teletext DTS is invalid."),
+      .off    = offsetof(timeshift_conf_t, teletext),
+      .opts   = PO_EXPERT,
     },
     {}
   }
@@ -284,9 +315,14 @@ timeshift_packet( timeshift_t *ts, streaming_message_t *sm )
   th_pkt_t *pkt = sm->sm_data;
   int64_t time;
 
-  time = ts_rescale(pkt->pkt_pts, 1000000);
-  if (ts->last_wr_time < time)
-    ts->last_wr_time = time;
+  if (pkt->pkt_pts != PTS_UNSET) {
+    /* avoid to update last_wr_time for TELETEXT packets */
+    if (pkt->pkt_type != SCT_TELETEXT) {
+      time = ts_rescale(pkt->pkt_pts, 1000000);
+      if (ts->last_wr_time < time)
+        ts->last_wr_time = time;
+    }
+  }
   sm->sm_time = ts->last_wr_time;
   timeshift_packet_log("wr ", ts, sm);
   streaming_target_deliver2(&ts->wr_queue.sq_st, sm);
@@ -321,8 +357,8 @@ static void timeshift_input
       pkt2 = pkt_copy_shallow(pkt);
       pkt_ref_dec(pkt);
       sm->sm_data = pkt2;
-      pkt2->pkt_pts += ts->start_pts;
-      pkt2->pkt_dts += ts->start_pts;
+      if (pkt2->pkt_pts != PTS_UNSET) pkt2->pkt_pts += ts->start_pts;
+      if (pkt2->pkt_dts != PTS_UNSET) pkt2->pkt_dts += ts->start_pts;
     }
 
     /* Check for exit */
@@ -354,6 +390,19 @@ _exit:
       timeshift_write_exit(ts->rd_pipe.wr);
   }
 }
+
+static htsmsg_t *
+timeshift_input_info(void *opaque, htsmsg_t *list)
+{
+  htsmsg_add_str(list, NULL, "wtimeshift input");
+  return list;
+}
+
+static streaming_ops_t timeshift_input_ops = {
+  .st_cb   = timeshift_input,
+  .st_info = timeshift_input_info
+};
+
 
 /**
  *
@@ -395,7 +444,9 @@ timeshift_destroy(streaming_target_t *pad)
 
   if (ts->path)
     free(ts->path);
+
   free(ts);
+  memoryinfo_free(&timeshift_memoryinfo, sizeof(timeshift_t));
 }
 
 /**
@@ -408,6 +459,8 @@ streaming_target_t *timeshift_create
   (streaming_target_t *out, time_t max_time)
 {
   timeshift_t *ts = calloc(1, sizeof(timeshift_t));
+
+  memoryinfo_alloc(&timeshift_memoryinfo, sizeof(timeshift_t));
 
   /* Must hold global lock */
   lock_assert(&global_lock);
@@ -440,7 +493,7 @@ streaming_target_t *timeshift_create
 
   /* Initialise input */
   streaming_queue_init(&ts->wr_queue, 0, 0);
-  streaming_target_init(&ts->input, timeshift_input, ts, 0);
+  streaming_target_init(&ts->input, &timeshift_input_ops, ts, 0);
   tvhthread_create(&ts->wr_thread, NULL, timeshift_writer, ts, "tshift-wr");
   tvhthread_create(&ts->rd_thread, NULL, timeshift_reader, ts, "tshift-rd");
 

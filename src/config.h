@@ -34,6 +34,7 @@ typedef struct config {
   int uilevel_nochange;
   int ui_quicktips;
   int digest;
+  int proxy;
   char *realm;
   char *wizard;
   char *full_version;
@@ -58,6 +59,7 @@ typedef struct config {
   int caclient_ui;
   int parser_backlog;
   int epg_compress;
+  uint32_t epg_cutwindow;
 } config_t;
 
 extern const idclass_t config_class;

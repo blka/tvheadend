@@ -235,6 +235,14 @@ const idclass_t mpegts_service_class =
       .opts     = PO_EXPERT | PO_HEXA,
     },
     {
+      .type     = PT_INT,
+      .id       = "pts_shift",
+      .name     = N_("Shift PTS (ms)"),
+      .desc     = N_("Add this value to PTS for the teletext subtitles. The time value is in milliseconds and may be negative."),
+      .off      = offsetof(mpegts_service_t, s_pts_shift),
+      .opts     = PO_EXPERT,
+    },
+    {
       .type     = PT_TIME,
       .id       = "created",
       .name     = N_("Created"),
@@ -288,7 +296,7 @@ mpegts_service_enlist_raw
   ( service_t *t, tvh_input_t *ti, struct service_instance_list *sil,
     int flags, int weight )
 {
-  int p = 0, w;
+  int p, w, r, added = 0, errcnt = 0;
   mpegts_service_t      *s = (mpegts_service_t*)t;
   mpegts_input_t        *mi;
   mpegts_mux_t          *m = s->s_dvb_mux;
@@ -309,7 +317,14 @@ mpegts_service_enlist_raw
     if (ti && (tvh_input_t *)mi != ti)
       continue;
 
-    if (!mi->mi_is_enabled(mi, mmi->mmi_mux, flags, weight)) continue;
+    r = mi->mi_is_enabled(mi, mmi->mmi_mux, flags, weight);
+    if (r == MI_IS_ENABLED_NEVER)
+      continue;
+    if (r == MI_IS_ENABLED_RETRY) {
+      /* temporary error - retry later */
+      errcnt++;
+      continue;
+    }
 
     /* Set weight to -1 (forced) for already active mux */
     if (mmi->mmi_mux->mm_active == mmi) {
@@ -324,9 +339,10 @@ mpegts_service_enlist_raw
     }
 
     service_instance_add(sil, t, mi->mi_instance, mi->mi_name, p, w);
+    added++;
   }
 
-  return 0;
+  return added ? 0 : (errcnt ? SM_CODE_NO_FREE_ADAPTER : 0);
 }
 
 /*
@@ -441,8 +457,8 @@ mpegts_service_setsourceinfo(service_t *t, source_info_t *si)
   memset(si, 0, sizeof(struct source_info));
   si->si_type = S_MPEG_TS;
 
-  uuid_copy(&si->si_network_uuid, &m->mm_network->mn_id.in_uuid);
-  uuid_copy(&si->si_mux_uuid, &m->mm_id.in_uuid);
+  uuid_duplicate(&si->si_network_uuid, &m->mm_network->mn_id.in_uuid);
+  uuid_duplicate(&si->si_mux_uuid, &m->mm_id.in_uuid);
 
   if(m->mm_network->mn_network_name != NULL)
     si->si_network = strdup(m->mm_network->mn_network_name);
@@ -454,7 +470,7 @@ mpegts_service_setsourceinfo(service_t *t, source_info_t *si)
 
   if(s->s_dvb_active_input) {
     mpegts_input_t *mi = s->s_dvb_active_input;
-    uuid_copy(&si->si_adapter_uuid, &mi->ti_id.in_uuid);
+    uuid_duplicate(&si->si_adapter_uuid, &mi->ti_id.in_uuid);
     mi->mi_display_name(mi, buf, sizeof(buf));
     si->si_adapter = strdup(buf);
   }
@@ -498,7 +514,7 @@ int64_t
 mpegts_service_channel_number ( service_t *s )
 {
   mpegts_service_t *ms = (mpegts_service_t*)s;
-  int r = 0;
+  int64_t r = 0;
 
   if (!ms->s_dvb_mux->mm_network->mn_ignore_chnum) {
     r = ms->s_dvb_channel_num * CHANNEL_SPLIT + ms->s_dvb_channel_minor;
@@ -728,6 +744,15 @@ mpegts_service_memoryinfo ( service_t *t, int64_t *size )
   *size += tvh_strlen(ms->s_dvb_charset);
 }
 
+static int
+mpegts_service_unseen( service_t *t, const char *type, time_t before )
+{
+  mpegts_service_t *ms = (mpegts_service_t*)t;
+  int pat = type && strcasecmp(type, "pat") == 0;
+  if (pat && ms->s_auto != SERVICE_AUTO_PAT_MISSING) return 0;
+  return ms->s_dvb_last_seen < before;
+}
+
 /* **************************************************************************
  * Creation/Location
  * *************************************************************************/
@@ -782,13 +807,14 @@ mpegts_service_create0
   s->s_mapped         = mpegts_service_mapped;
   s->s_satip_source   = mpegts_service_satip_source;
   s->s_memoryinfo     = mpegts_service_memoryinfo;
+  s->s_unseen         = mpegts_service_unseen;
 
   pthread_mutex_lock(&s->s_stream_mutex);
   service_make_nicename((service_t*)s);
   pthread_mutex_unlock(&s->s_stream_mutex);
 
   mpegts_mux_nice_name(mm, buf, sizeof(buf));
-  tvhlog(LOG_DEBUG, "mpegts", "%s - add service %04X %s", buf, s->s_dvb_service_id, s->s_dvb_svcname);
+  tvhdebug(LS_MPEGTS, "%s - add service %04X %s", buf, s->s_dvb_service_id, s->s_dvb_svcname);
 
   /* Notification */
   idnode_notify_changed(&mm->mm_id);
@@ -1059,7 +1085,7 @@ mpegts_service_create_raw ( mpegts_mux_t *mm )
   s->s_nicename = strdup(buf);
   pthread_mutex_unlock(&s->s_stream_mutex);
 
-  tvhlog(LOG_DEBUG, "mpegts", "%s - add raw service", buf);
+  tvhdebug(LS_MPEGTS, "%s - add raw service", buf);
 
   return s;
 }

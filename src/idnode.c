@@ -108,7 +108,7 @@ idnode_insert(idnode_t *in, const char *uuid, const idclass_t *class, int flags)
       in->in_class = NULL;
       return -1;
     }
-    uuid_copy(&in->in_uuid, &u);
+    uuid_duplicate(&in->in_uuid, &u);
 
     c = NULL;
     if (flags & IDNODE_SHORT_UUID) {
@@ -128,18 +128,18 @@ idnode_insert(idnode_t *in, const char *uuid, const idclass_t *class, int flags)
   } while (c != NULL && --retries > 0);
 
   if(c != NULL) {
-    tvherror("idnode", "Id node collission (%s) %s",
+    tvherror(LS_IDNODE, "Id node collission (%s) %s",
              uuid, (flags & IDNODE_SHORT_UUID) ? " (short)" : "");
     fprintf(stderr, "Id node collision (%s) %s\n",
             uuid, (flags & IDNODE_SHORT_UUID) ? " (short)" : "");
     abort();
   }
-  tvhtrace("idnode", "insert node %s", idnode_uuid_as_str(in, ubuf));
+  tvhtrace(LS_IDNODE, "insert node %s", idnode_uuid_as_str(in, ubuf));
 
   /* Register the class */
   in->in_domain = idclass_find_domain(class);
   if (in->in_domain == NULL) {
-    tvherror("idnode", "classs '%s' is not registered", class->ic_class);
+    tvherror(LS_IDNODE, "class '%s' is not registered", class->ic_class);
     abort();
   }
   c = RB_INSERT_SORTED(in->in_domain, in, in_domain_link, in_cmp);
@@ -162,7 +162,7 @@ idnode_unlink(idnode_t *in)
   lock_assert(&global_lock);
   RB_REMOVE(&idnodes, in, in_link);
   RB_REMOVE(in->in_domain, in, in_domain_link);
-  tvhtrace("idnode", "unlink node %s", idnode_uuid_as_str(in, ubuf));
+  tvhtrace(LS_IDNODE, "unlink node %s", idnode_uuid_as_str(in, ubuf));
   idnode_notify(in, "delete");
   assert(in->in_save == NULL || in->in_save == SAVEPTR_OUTOFSERVICE);
 }
@@ -612,7 +612,7 @@ idnode_find ( const char *uuid, const idclass_t *idc, const idnodes_rb_t *domain
 {
   idnode_t skel, *r;
 
-  tvhtrace("idnode", "find node %s class %s", uuid, idc ? idc->ic_class : NULL);
+  tvhtrace(LS_IDNODE, "find node %s class %s", uuid, idc ? idc->ic_class : NULL);
   if(uuid == NULL || strlen(uuid) != UUID_HEX_SIZE - 1)
     return NULL;
   if(hex2bin(skel.in_uuid.bin, sizeof(skel.in_uuid.bin), uuid))
@@ -640,7 +640,7 @@ idnode_find_all ( const idclass_t *idc, const idnodes_rb_t *domain )
   idnode_t *in;
   const idclass_t *ic;
   char ubuf[UUID_HEX_SIZE];
-  tvhtrace("idnode", "find class %s", idc->ic_class);
+  tvhtrace(LS_IDNODE, "find class %s", idc->ic_class);
   idnode_set_t *is = calloc(1, sizeof(idnode_set_t));
   if (domain == NULL)
     domain = idnode_domain(idc);
@@ -649,7 +649,7 @@ idnode_find_all ( const idclass_t *idc, const idnodes_rb_t *domain )
       ic = in->in_class;
       while (ic) {
         if (ic == idc) {
-          tvhtrace("idnode", "  add node %s", idnode_uuid_as_str(in, ubuf));
+          tvhtrace(LS_IDNODE, "  add node %s", idnode_uuid_as_str(in, ubuf));
           idnode_set_add(is, in, NULL, NULL);
           break;
         }
@@ -661,7 +661,7 @@ idnode_find_all ( const idclass_t *idc, const idnodes_rb_t *domain )
       ic = in->in_class;
       while (ic) {
         if (ic == idc) {
-          tvhtrace("idnode", "  add node %s", idnode_uuid_as_str(in, ubuf));
+          tvhtrace(LS_IDNODE, "  add node %s", idnode_uuid_as_str(in, ubuf));
           idnode_set_add(is, in, NULL, NULL);
           break;
         }
@@ -1202,6 +1202,7 @@ void
 idnode_changed( idnode_t *self )
 {
   idnode_notify_changed(self);
+  idnode_changedfn(self);
   idnode_save_queue(self);
 }
 
@@ -1363,7 +1364,7 @@ idclass_root_register(const idclass_t *idc)
   if (r) return;
   RB_INIT(&idclasses_skel->nodes);
   SKEL_USED(idclasses_skel);
-  tvhtrace("idnode", "register root class %s", idc->ic_class);
+  tvhtrace(LS_IDNODE, "register root class %s", idc->ic_class);
 }
 
 void
@@ -1379,7 +1380,7 @@ idclass_register(const idclass_t *idc)
     }
     RB_INIT(&idclasses_skel->nodes); /* not used, but for sure */
     SKEL_USED(idclasses_skel);
-    tvhtrace("idnode", "register class %s", idc->ic_class);
+    tvhtrace(LS_IDNODE, "register class %s", idc->ic_class);
     prev = idc;
     idc = idc->ic_super;
   }
@@ -1394,7 +1395,7 @@ idclass_find ( const char *class )
   idclass_t idc;
   skel.idc = &idc;
   idc.ic_class = class;
-  tvhtrace("idnode", "find class %s", class);
+  tvhtrace(LS_IDNODE, "find class %s", class);
   t = RB_FIND(&idclasses, &skel, link, ic_cmp);
   return t ? t->idc : NULL;
 }
@@ -1513,9 +1514,7 @@ idnode_slist_enum ( idnode_t *in, idnode_slist_t *options, const char *lang )
   htsmsg_t *l = htsmsg_create_list(), *m;
 
   for (; options->id; options++) {
-    m = htsmsg_create_map();
-    htsmsg_add_str(m, "key", options->id);
-    htsmsg_add_str(m, "val", tvh_gettext_lang(lang, options->name));
+    m = htsmsg_create_key_val(options->id, tvh_gettext_lang(lang, options->name));
     htsmsg_add_msg(l, NULL, m);
   }
   return l;

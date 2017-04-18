@@ -36,17 +36,8 @@
 #include "input/mpegts/scanfile.h"
 
 #include <netinet/ip.h>
-
-#ifndef IPTOS_CLASS_CS0
-#define IPTOS_CLASS_CS0                 0x00
-#define IPTOS_CLASS_CS1                 0x20
-#define IPTOS_CLASS_CS2                 0x40
-#define IPTOS_CLASS_CS3                 0x60
-#define IPTOS_CLASS_CS4                 0x80
-#define IPTOS_CLASS_CS5                 0xa0
-#define IPTOS_CLASS_CS6                 0xc0
-#define IPTOS_CLASS_CS7                 0xe0
-#endif
+#define COMPAT_IPTOS
+#include "compat.h"
 
 static void config_muxconfpath_notify ( void *o, const char *lang );
 
@@ -519,7 +510,9 @@ config_migrate_v3 ( void )
   if (!access(dst, R_OK | W_OK))
     return;
 
-  hts_settings_makedirs(dst);
+  if (hts_settings_makedirs(dst))
+    return;
+
   hts_settings_buildpath(src, sizeof(src), "input/linuxdvb/networks");
   rename(src, dst);
 }
@@ -1404,7 +1397,48 @@ config_migrate_v23 ( void )
   config_migrate_v23_one("pyepg");
 }
 
+static void
+config_migrate_v24_helper ( const char **list, htsmsg_t *e, const char *name )
+{
+  htsmsg_t *l = htsmsg_create_list();
+  const char **p = list;
+  for (p = list; *p; p += 2)
+    if (htsmsg_get_bool_or_default(e, p[0], 0))
+      htsmsg_add_str(l, NULL, p[1]);
+  for (p = list; *p; p += 2)
+    htsmsg_delete_field(e, p[0]);
+  htsmsg_add_msg(e, name, l);
+}
 
+static void
+config_migrate_v24 ( void )
+{
+  htsmsg_t *c, *e;
+  htsmsg_field_t *f;
+  static const char *streaming_list[] = {
+    "streaming", "basic",
+    "adv_streaming", "advanced",
+    "htsp_streaming", "htsp",
+    NULL
+  };
+  static const char *dvr_list[] = {
+    "dvr", "basic",
+    "htsp_dvr", "htsp",
+    "all_dvr", "all",
+    "all_rw_dvr", "all_rw",
+    "failed_dvr", "failed",
+    NULL
+  };
+  if ((c = hts_settings_load("accesscontrol")) != NULL) {
+    HTSMSG_FOREACH(f, c) {
+      if (!(e = htsmsg_field_get_map(f))) continue;
+      config_migrate_v24_helper(streaming_list, e, "streaming");
+      config_migrate_v24_helper(dvr_list, e, "dvr");
+      hts_settings_save(e, "accesscontrol/%s", f->hmf_name);
+    }
+    htsmsg_destroy(c);
+  }
+}
 
 /*
  * Perform backup
@@ -1427,11 +1461,11 @@ dobackup(const char *oldver)
 
   assert(root);
 
-  tvhinfo("config", "backup: migrating config from %s (running %s)",
+  tvhinfo(LS_CONFIG, "backup: migrating config from %s (running %s)",
                     oldver, tvheadend_version);
 
   if (getcwd(cwd, sizeof(cwd)) == NULL) {
-    tvherror("config", "unable to get the current working directory");
+    tvherror(LS_CONFIG, "unable to get the current working directory");
     goto fatal;
   }
 
@@ -1442,21 +1476,21 @@ dobackup(const char *oldver)
   else if (!access("/usr/local/bin/tar", X_OK))
     argv[0] = "/usr/local/bin/tar";
   else {
-    tvherror("config", "unable to find tar program");
+    tvherror(LS_CONFIG, "unable to find tar program");
     goto fatal;
   }
 
   snprintf(outfile, sizeof(outfile), "%s/backup", root);
-  if (makedirs("config", outfile, 0700, 1, -1, -1))
+  if (makedirs(LS_CONFIG, outfile, 0700, 1, -1, -1))
     goto fatal;
   if (chdir(root)) {
-    tvherror("config", "unable to find directory '%s'", root);
+    tvherror(LS_CONFIG, "unable to find directory '%s'", root);
     goto fatal;
   }
 
   snprintf(outfile, sizeof(outfile), "%s/backup/%s.tar.bz2",
                                      root, oldver);
-  tvhinfo("config", "backup: running, output file %s", outfile);
+  tvhinfo(LS_CONFIG, "backup: running, output file %s", outfile);
 
   if (spawnv(argv[0], (void *)argv, &pid, 1, 1)) {
     code = -ENOENT;
@@ -1465,7 +1499,7 @@ dobackup(const char *oldver)
       tvh_safe_usleep(20000);
     if (code == -ECHILD)
       code = 0;
-    tvhinfo("config", "backup: completed");
+    tvhinfo(LS_CONFIG, "backup: completed");
   }
 
   if (code) {
@@ -1478,25 +1512,25 @@ dobackup(const char *oldver)
         htsbuf_append(&q, " ", 1);
     }
     s = htsbuf_to_string(&q);
-    tvherror("config", "command '%s' returned error code %d", s, code);
-    tvherror("config", "executed in directory '%s'", root);
-    tvherror("config", "please, do not report this as an error, you may use --nobackup option");
-    tvherror("config", "... or run the above command in the printed directory");
-    tvherror("config", "... using the same user/group as for the tvheadend executable");
-    tvherror("config", "... to check the reason for the unfinished backup");
+    tvherror(LS_CONFIG, "command '%s' returned error code %d", s, code);
+    tvherror(LS_CONFIG, "executed in directory '%s'", root);
+    tvherror(LS_CONFIG, "please, do not report this as an error, you may use --nobackup option");
+    tvherror(LS_CONFIG, "... or run the above command in the printed directory");
+    tvherror(LS_CONFIG, "... using the same user/group as for the tvheadend executable");
+    tvherror(LS_CONFIG, "... to check the reason for the unfinished backup");
     free(s);
     htsbuf_queue_flush(&q);
     goto fatal;
   }
 
   if (chdir(cwd)) {
-    tvherror("config", "unable to change directory to '%s'", cwd);
+    tvherror(LS_CONFIG, "unable to change directory to '%s'", cwd);
     goto fatal;
   }
   return;
 
 fatal:
-  tvherror("config", "backup: fatal error");
+  tvherror(LS_CONFIG, "backup: fatal error");
   exit(EXIT_FAILURE);
 }
 
@@ -1526,7 +1560,8 @@ static const config_migrate_t config_migrate_table[] = {
   config_migrate_v20,
   config_migrate_v21,
   config_migrate_v22,
-  config_migrate_v23
+  config_migrate_v23,
+  config_migrate_v24
 };
 
 /*
@@ -1564,7 +1599,7 @@ config_migrate ( int backup )
 
   /* Run migrations */
   for ( ; v < ARRAY_SIZE(config_migrate_table); v++) {
-    tvhinfo("config", "migrating config from v%d to v%d", v, v+1);
+    tvhinfo(LS_CONFIG, "migrating config from v%d to v%d", v, v+1);
     config_migrate_table[v]();
   }
 
@@ -1591,7 +1626,7 @@ config_check_one ( const char *dir )
   HTSMSG_FOREACH(f, c) {
     if (!(e = htsmsg_field_get_map(f))) continue;
     if (strlen(f->hmf_name) != UUID_HEX_SIZE - 1) {
-      tvherror("START", "filename %s/%s/%s is invalid", hts_settings_get_root(), dir, f->hmf_name);
+      tvherror(LS_START, "filename %s/%s/%s is invalid", hts_settings_get_root(), dir, f->hmf_name);
       exit(1);
     }
   }
@@ -1632,12 +1667,14 @@ config_boot ( const char *path, gid_t gid, uid_t uid )
   config.idnode.in_class = &config_class;
   config.ui_quicktips = 1;
   config.digest = 1;
+  config.proxy = 0;
   config.realm = strdup("tvheadend");
   config.info_area = strdup("login,storage,time");
   config.cookie_expires = 7;
   config.dscp = -1;
   config.descrambler_buffer = 9000;
   config.epg_compress = 1;
+  config.epg_cutwindow = 5*60;
   config_scanfile_ok = 0;
   config.theme_ui = strdup("blue");
 
@@ -1647,7 +1684,7 @@ config_boot ( const char *path, gid_t gid, uid_t uid )
   if (!path) {
     const char *homedir = getenv("HOME");
     if (homedir == NULL) {
-      tvherror("START", "environment variable HOME is not set");
+      tvherror(LS_START, "environment variable HOME is not set");
       exit(EXIT_FAILURE);
     }
     snprintf(buf, sizeof(buf), "%s/.hts/tvheadend", homedir);
@@ -1657,8 +1694,8 @@ config_boot ( const char *path, gid_t gid, uid_t uid )
   /* Ensure directory exists */
   if (stat(path, &st)) {
     config_newcfg = 1;
-    if (makedirs("config", path, 0700, 1, gid, uid)) {
-      tvhwarn("START", "failed to create settings directory %s,"
+    if (makedirs(LS_CONFIG, path, 0700, 1, gid, uid)) {
+      tvhwarn(LS_START, "failed to create settings directory %s,"
                        " settings will not be saved", path);
       return;
     }
@@ -1666,7 +1703,7 @@ config_boot ( const char *path, gid_t gid, uid_t uid )
 
   /* And is usable */
   else if (access(path, R_OK | W_OK)) {
-    tvhwarn("START", "configuration path %s is not r/w"
+    tvhwarn(LS_START, "configuration path %s is not r/w"
                      " for UID:%d GID:%d [e=%s],"
                      " settings will not be saved",
             path, getuid(), getgid(), strerror(errno));
@@ -1682,12 +1719,12 @@ config_boot ( const char *path, gid_t gid, uid_t uid )
     exit(78); /* config error */
 
   if (chown(config_lock, uid, gid))
-    tvhwarn("config", "unable to chown lock file %s UID:%d GID:%d", config_lock, uid, gid);
+    tvhwarn(LS_CONFIG, "unable to chown lock file %s UID:%d GID:%d", config_lock, uid, gid);
 
   /* Load global settings */
   config2 = hts_settings_load("config");
   if (!config2) {
-    tvhlog(LOG_DEBUG, "config", "no configuration, loading defaults");
+    tvhlog(LOG_DEBUG, LS_CONFIG, "no configuration, loading defaults");
     config.wizard = strdup("hello");
     config_newcfg = 1;
   } else {
@@ -1722,7 +1759,7 @@ config_init ( int backup )
   const char *path = hts_settings_get_root();
 
   if (path == NULL || access(path, R_OK | W_OK)) {
-    tvhwarn("START", "configuration path %s is not r/w"
+    tvhwarn(LS_START, "configuration path %s is not r/w"
                      " for UID:%d GID:%d [e=%s],"
                      " settings will not be saved",
             path, getuid(), getgid(), strerror(errno));
@@ -1741,7 +1778,7 @@ config_init ( int backup )
     if (config_migrate(backup))
       config_check();
   }
-  tvhinfo("config", "loaded");
+  tvhinfo(LS_CONFIG, "loaded");
 }
 
 void config_done ( void )
@@ -1865,9 +1902,7 @@ static void
 config_class_info_area_list1 ( htsmsg_t *m, const char *key,
                                const char *val, const char *lang )
 {
-  htsmsg_t *e = htsmsg_create_map();
-  htsmsg_add_str(e, "key", key);
-  htsmsg_add_str(e, "val", tvh_gettext_lang(lang, val));
+  htsmsg_t *e = htsmsg_create_key_val(key, tvh_gettext_lang(lang, val));
   htsmsg_add_msg(m, NULL, e);
 }
 
@@ -1952,7 +1987,7 @@ config_muxconfpath_notify_cb(void *opaque, int disarmed)
     free(muxconf_path);
     return;
   }
-  tvhinfo("config", "scanfile (re)initialization with path %s", muxconf_path ?: "<none>");
+  tvhinfo(LS_CONFIG, "scanfile (re)initialization with path %s", muxconf_path ?: "<none>");
   scanfile_init(muxconf_path, 1);
   free(muxconf_path);
 }
@@ -2081,7 +2116,21 @@ const idclass_t config_class = {
                    "It is intended to replace unencrypted HTTP basic access authentication. "
                    "This option should be enabled for standard usage."),
       .off    = offsetof(config_t, digest),
-      .opts   = PO_ADVANCED,
+      .opts   = PO_EXPERT,
+      .group  = 1
+    },
+    {
+      .type   = PT_BOOL,
+      .id     = "proxy",
+      .name   = N_("Use PROXY protocol & X-Forwarded-For"),
+      .desc   = N_("PROXY protocol is an extension for support incoming "
+                   "TCP connections from a remote server (like a firewall) "
+                   "sending the original IP address of the client. "
+                   "The HTTP header 'X-Forwarded-For' do the same with "
+                   "HTTP connections. Both enable tunneled connections."
+                   "This option should be disabled for standard usage."),
+      .off    = offsetof(config_t, proxy),
+      .opts   = PO_EXPERT,
       .group  = 1
     },
     {
@@ -2092,7 +2141,7 @@ const idclass_t config_class = {
       .desc   = N_("The number of days cookies set by Tvheadend should "
                    "expire."),
       .off    = offsetof(config_t, cookie_expires),
-      .opts   = PO_ADVANCED,
+      .opts   = PO_EXPERT,
       .group  = 1
     },
     {
@@ -2133,6 +2182,7 @@ const idclass_t config_class = {
                    "for the advanced level. By default, this tab is visible only "
                    "in the expert level."),
       .off    = offsetof(config_t, caclient_ui),
+      .opts   = PO_ADVANCED,
       .group  = 1
     },
     {
@@ -2181,9 +2231,18 @@ const idclass_t config_class = {
       .off    = offsetof(config_t, epg_compress),
       .opts   = PO_EXPERT,
       .def.i  = 1,
-      .group  = 1
+      .group  = 2
     },
 #endif
+    {
+      .type   = PT_U32,
+      .id     = "epg_cutwindow",
+      .name   = N_("EPG overlap cut"),
+      .desc   = N_("The time window to cut the stop time from the overlapped event in seconds."),
+      .off    = offsetof(config_t, epg_cutwindow),
+      .opts   = PO_EXPERT,
+      .group  = 2
+    },
     {
       .type   = PT_STR,
       .islist = 1,
@@ -2294,7 +2353,7 @@ const idclass_t config_class = {
       .type   = PT_INT,
       .id     = "chiconscheme",
       .name   = N_("Channel icon name scheme"),
-      .desc   = N_("Scheme to generate the the channel icon names "
+      .desc   = N_("Scheme to generate the channel icon names "
                    "(all lower-case, service name picons etc.)."),
       .list   = config_class_chiconscheme_list,
       .doc    = prop_doc_config_channelname_scheme,
@@ -2343,7 +2402,7 @@ const idclass_t config_class = {
 
 const char *config_get_server_name ( void )
 {
-  return config.server_name;
+  return config.server_name ?: "Tvheadend";
 }
 
 const char *config_get_language ( void )

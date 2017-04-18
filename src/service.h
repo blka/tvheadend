@@ -70,6 +70,7 @@ typedef struct elementary_stream {
 
   char es_lang[4];           /* ISO 639 2B 3-letter language code */
   uint8_t es_audio_type;     /* Audio type */
+  uint8_t es_audio_version;  /* Audio version/layer */
 
   uint16_t es_composition_id;
   uint16_t es_ancillary_id;
@@ -303,6 +304,7 @@ typedef struct service {
   int s_auto;
   int s_prio;
   int s_type_user;
+  int s_pts_shift; // in ms (may be negative)
 
   LIST_ENTRY(service) s_active_link;
 
@@ -332,6 +334,8 @@ typedef struct service {
   int (*s_satip_source)(struct service *t);
 
   void (*s_memoryinfo)(struct service *t, int64_t *size);
+
+  int (*s_unseen)(struct service *t, const char *type, time_t before);
 
   /**
    * Channel info
@@ -422,6 +426,7 @@ typedef struct service {
 #define TSS_MUX_PACKETS      0x4
 #define TSS_PACKETS          0x8
 #define TSS_NO_ACCESS        0x10
+#define TSS_CA_CHECK         0x20
 
 
   // Errors
@@ -438,6 +443,7 @@ typedef struct service {
    */
   int s_streaming_live;
   int s_running;
+  int s_pending_restart;
 
   // Live status
 #define TSS_LIVE             0x01
@@ -455,6 +461,7 @@ typedef struct service {
    * Descrambling support
    */
 
+  uint16_t s_dvb_forcecaid;
   struct th_descrambler_list s_descramblers;
   uint8_t s_scrambled_seen;
   uint8_t s_scrambled_pass;
@@ -618,6 +625,8 @@ htsmsg_t *servicetype_list (void);
 void service_load ( service_t *s, htsmsg_t *c );
 
 void service_save ( service_t *s, htsmsg_t *c );
+
+void service_remove_unseen(const char *type, int days);
 
 void sort_elementary_streams(service_t *t);
 

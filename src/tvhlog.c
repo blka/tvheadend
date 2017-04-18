@@ -27,15 +27,18 @@
 #include <execinfo.h>
 #endif
 
+#include "bitops.h"
 #include "libav.h"
 #include "webui/webui.h"
+
+#define TVHLOG_BITARRAY ((LS_LAST + (BITS_PER_LONG - 1)) / BITS_PER_LONG)
 
 int                      tvhlog_run;
 int                      tvhlog_level;
 int                      tvhlog_options;
 char                    *tvhlog_path;
-htsmsg_t                *tvhlog_debug;
-htsmsg_t                *tvhlog_trace;
+bitops_ulong_t           tvhlog_debug[TVHLOG_BITARRAY];
+bitops_ulong_t           tvhlog_trace[TVHLOG_BITARRAY];
 pthread_t                tvhlog_tid;
 pthread_mutex_t          tvhlog_mutex;
 tvh_cond_t               tvhlog_cond;
@@ -67,35 +70,134 @@ static const char *logtxtmeta[9][2] = {
   {"TRACE",     "\033[32m"},
 };
 
+tvhlog_subsys_t tvhlog_subsystems[] = {
+  [LS_NONE]          = { "<none>",        N_("None") },
+  [LS_START]         = { "START",         N_("START") },
+  [LS_STOP]          = { "STOP",          N_("STOP") },
+  [LS_CRASH]         = { "CRASH",         N_("CRASH") },
+  [LS_CPU]           = { "CPU",           N_("CPU") },
+  [LS_MAIN]          = { "main",          N_("Main") },
+  [LS_GTIMER]        = { "gtimer",        N_("Global timer") },
+  [LS_MTIMER]        = { "mtimer",        N_("Monitonic timer") },
+  [LS_THREAD]        = { "thread",        N_("Thread") },
+  [LS_TVHPOLL]       = { "tvhpoll",       N_("Poll multiplexer") },
+  [LS_TIME]          = { "time",          N_("Time") },
+  [LS_SPAWN]         = { "spawn",         N_("Spawn") },
+  [LS_FSMONITOR]     = { "fsmonitor",     N_("Filesystem monitor") },
+  [LS_LOCK]          = { "lock",          N_("Locking") },
+  [LS_UUID]          = { "uuid",          N_("UUID") },
+  [LS_IDNODE]        = { "idnode",        N_("Node subsystem") },
+  [LS_URL]           = { "url",           N_("URL") },
+  [LS_TCP]           = { "tcp",           N_("TCP Protocol") },
+  [LS_RTSP]          = { "rtsp",          N_("RTSP Protocol") },
+  [LS_UPNP]          = { "upnp",          N_("UPnP Protocol") },
+  [LS_SETTINGS]      = { "settings",      N_("Settings") },
+  [LS_CONFIG]        = { "config",        N_("Configuration") },
+  [LS_ACCESS]        = { "access",        N_("Access (ACL)") },
+  [LS_CRON]          = { "cron",          N_("Cron") },
+  [LS_DBUS]          = { "dbus",          N_("DBUS") },
+  [LS_AVAHI]         = { "avahi",         N_("Avahi") },
+  [LS_BONJOUR]       = { "bonjour",       N_("Bonjour") },
+  [LS_API]           = { "api",           N_("API") },
+  [LS_HTTP]          = { "http",          N_("HTTP Server") },
+  [LS_HTTPC]         = { "httpc",         N_("HTTP Client") },
+  [LS_HTSP]          = { "htsp",          N_("HTSP Server") },
+  [LS_HTSP_SUB]      = { "htsp-sub",      N_("HTSP Subscription") },
+  [LS_HTSP_REQ]      = { "htsp-req",      N_("HTSP Request") },
+  [LS_HTSP_ANS]      = { "htsp-ans",      N_("HTSP Answer") },
+  [LS_IMAGECACHE]    = { "imagecache",    N_("Image Cache") },
+  [LS_TBL]           = { "tbl",           N_("DVB SI Tables") },
+  [LS_TBL_BASE]      = { "tbl-base",      N_("Base DVB SI Tables (PAT,CAT,PMT,SDT etc.)") },
+  [LS_TBL_CSA]       = { "tbl-csa",       N_("DVB CSA (descrambling) Tables") },
+  [LS_TBL_EIT]       = { "tbl-eit",       N_("DVB EPG Tables") },
+  [LS_TBL_TIME]      = { "tbl-time",      N_("DVB Time Tables") },
+  [LS_TBL_ATSC]      = { "tbl-atsc",      N_("ATSC SI Tables") },
+  [LS_TBL_PASS]      = { "tbl-pass",      N_("Passthrough Muxer SI Tables") },
+  [LS_TBL_SATIP]     = { "tbl-satip",     N_("SAT>IP Server SI Tables") },
+  [LS_FASTSCAN]      = { "fastscan",      N_("Fastscan DVB") },
+  [LS_PARSER]        = { "parser",        N_("MPEG-TS Parser") },
+  [LS_TS]            = { "TS",            N_("Transport Stream") },
+  [LS_GLOBALHEADERS] = { "globalheaders", N_("Global Headers") }, 
+  [LS_TSFIX]         = { "tsfix",         N_("Time Stamp Fix") },
+  [LS_HEVC]          = { "hevc",          N_("HEVC - H.265") },
+  [LS_MUXER]         = { "muxer",         N_("Muxer") },
+  [LS_PASS]          = { "pass",          N_("Pass-thru muxer") },
+  [LS_AUDIOES]       = { "audioes",       N_("Audioes muxer") },
+  [LS_MKV]           = { "mkv",           N_("Matroska muxer") },
+  [LS_SERVICE]       = { "service",       N_("Service") },
+  [LS_CHANNEL]       = { "channel",       N_("Channel") },
+  [LS_SUBSCRIPTION]  = { "subscription",  N_("Subscription") },
+  [LS_SERVICE_MAPPER]= { "service-mapper",N_("Service Mapper") },
+  [LS_BOUQUET]       = { "bouquet",       N_("Bouquet") },
+  [LS_ESFILTER]      = { "esfilter",      N_("Elementary Stream Filter") },
+  [LS_PROFILE]       = { "profile",       N_("Streaming Profile") },
+  [LS_DESCRAMBLER]   = { "descrambler",   N_("Descrambler") },
+  [LS_DESCRAMBLER_EMM]={ "descrambler-emm",N_("Descrambler EMM") },
+  [LS_CACLIENT]      = { "caclient",      N_("CA (descrambling) Client") },
+  [LS_CSA]           = { "csa",           N_("CSA (descrambling)") },
+  [LS_CAPMT]         = { "capmt",         N_("CAPMT CA Client") },
+  [LS_CWC]           = { "cwc",           N_("CWC CA Client") },
+  [LS_DVBCAM]        = { "dvbcam",        N_("DVB CAM Client") },
+  [LS_DVR]           = { "dvr",           N_("Digital Video Recorder") },
+  [LS_EPG]           = { "epg",           N_("Electronic Program Guide") },
+  [LS_EPGDB]         = { "epgdb",         N_("EPG Database") },
+  [LS_EPGGRAB]       = { "epggrab",       N_("EPG Grabber") },
+  [LS_CHARSET]       = { "charset",       N_("Charset") },
+  [LS_DVB]           = { "dvb",           N_("DVB") },
+  [LS_MPEGTS]        = { "mpegts",        N_("MPEG-TS") },
+  [LS_MUXSCHED]      = { "muxsched",      N_("Mux Scheduler") },
+  [LS_LIBAV]         = { "libav",         N_("libav / ffmpeg") },
+  [LS_TRANSCODE]     = { "transcode",     N_("Transcode") },
+  [LS_IPTV]          = { "iptv",          N_("IPTV") },
+  [LS_IPTV_PCR]      = { "iptv-pcr",      N_("IPTV PCR") },
+  [LS_IPTV_SUB]      = { "iptv-sub",      N_("IPTV Subcription") },
+  [LS_LINUXDVB]      = { "linuxdvb",      N_("LinuxDVB Input") },
+  [LS_DISEQC]        = { "diseqc",        N_("DiseqC") },
+  [LS_EN50221]       = { "en50221",       N_("CI Module") },
+  [LS_EN50494]       = { "en50494",       N_("Unicable (EN50494)") },
+  [LS_SATIP]         = { "satip",         N_("SAT>IP Client") },
+  [LS_SATIPS]        = { "satips",        N_("SAT>IP Server") },
+  [LS_TVHDHOMERUN]   = { "tvhdhomerun",   N_("TVHDHomeRun Client") }, 
+  [LS_PSIP]          = { "psip",          N_("ATSC PSIP EPG") },
+  [LS_OPENTV]        = { "opentv",        N_("OpenTV EPG") },
+  [LS_PYEPG]         = { "pyepg",         N_("PyEPG Import") },
+  [LS_XMLTV]         = { "xmltv",         N_("XMLTV EPG Import") },
+  [LS_WEBUI]         = { "webui",         N_("Web User Interface") },
+  [LS_TIMESHIFT]     = { "timeshift",     N_("Timeshift") },
+  [LS_SCANFILE]      = { "scanfile",      N_("Scanfile") },
+  [LS_TSFILE]        = { "tsfile",        N_("MPEG-TS File") },
+  [LS_TSDEBUG]       = { "tsdebug",       N_("MPEG-TS Input Debug") },
+};
+
 static void
-tvhlog_get_subsys ( htsmsg_t *ss, char *subsys, size_t len )
+tvhlog_get_subsys ( bitops_ulong_t *ss, char *subsys, size_t len )
 {
   size_t c = 0;
-  int first = 1;
-  htsmsg_field_t *f;
+  uint_fast32_t first = 1, i;
   *subsys = '\0';
-  if (ss) {
-    HTSMSG_FOREACH(f, ss) {
-      if (f->hmf_type != HMF_S64) continue;
-      tvh_strlcatf(subsys, len, c, "%s%c%s",
-                    first ? "" : ",",
-                    f->hmf_s64 ? '+' : '-',
-                    f->hmf_name);
-      first = 0;
-    }
+  for (i = 0; i < LS_LAST; i++)
+    if (!test_bit(i, ss)) break;
+  if (i >= LS_LAST) {
+    tvh_strlcatf(subsys, len, c, "all");
+    return;
+  }
+  for (i = 0; i < LS_LAST; i++) {
+    if (!test_bit(i, ss)) continue;
+    tvh_strlcatf(subsys, len, c, "%s%s",
+                 first ? "" : ",",
+                 tvhlog_subsystems[i].name);
+    first = 0;
   }
 }
 
 /* Set subsys */
 static void
-tvhlog_set_subsys ( htsmsg_t **c, const char *subsys )
+tvhlog_set_subsys ( bitops_ulong_t *c, const char *subsys )
 {
-  uint32_t a;
+  uint_fast32_t a, i;
   char *s, *t, *r = NULL;
 
-  if (*c)
-    htsmsg_destroy(*c);
-  *c = NULL;
+  memset(c, 0, TVHLOG_BITARRAY * sizeof(bitops_ulong_t));
 
   if (!subsys)
     return;
@@ -112,13 +214,16 @@ tvhlog_set_subsys ( htsmsg_t **c, const char *subsys )
     }
     if (!*t) goto next;
     if (!strcmp(t, "all")) {
-      if (*c)
-        htsmsg_destroy(*c);
-      *c = NULL;
+      memset(c, a ? 0xff : 0, TVHLOG_BITARRAY * sizeof(bitops_ulong_t));
+    } else {
+      for (i = 0; i < LS_LAST; i++)
+        if (!strcmp(tvhlog_subsystems[i].name, t)) {
+          if (a) set_bit(i, c); else clear_bit(i, c);
+          break;
+        }
+      if (i >= LS_LAST)
+        tvherror(LS_CONFIG, "uknown subsystem '%s'", t);
     }
-    if (!*c)
-      *c = htsmsg_create_map();
-    htsmsg_set_u32(*c, t, a);
 next:
     t = strtok_r(NULL, ",", &r);
   }
@@ -128,13 +233,13 @@ next:
 void
 tvhlog_set_debug ( const char *subsys )
 {
-  tvhlog_set_subsys(&tvhlog_debug, subsys);
+  tvhlog_set_subsys(tvhlog_debug, subsys);
 }
 
 void
 tvhlog_set_trace ( const char *subsys )
 {
-  tvhlog_set_subsys(&tvhlog_trace, subsys);
+  tvhlog_set_subsys(tvhlog_trace, subsys);
 }
 
 void
@@ -175,7 +280,7 @@ tvhlog_process
   }
 
   /* Comet (debug must still be enabled??) */
-  if(msg->notify && msg->severity < LOG_TRACE) {
+  if (msg->notify && msg->severity < LOG_TRACE) {
     htsmsg_t *m = htsmsg_create_map();
     snprintf(buf, sizeof(buf), "%s %s", t, msg->msg);
     htsmsg_add_str(m, "notificationClass", "logmessage");
@@ -263,42 +368,35 @@ tvhlog_thread ( void *p )
   return NULL;
 }
 
-void tvhlogv ( const char *file, int line,
-               int notify, int severity,
-               const char *subsys, const char *fmt, va_list *args )
+void tvhlogv ( const char *file, int line, int severity,
+               int subsys, const char *fmt, va_list *args )
 {
-  int ok, options;
+  int ok, options, notify;
   size_t l;
   char buf[1024];
 
-  pthread_mutex_lock(&tvhlog_mutex);
+  notify = (severity & LOG_TVH_NOTIFY) ? 1 : 0;
+  severity &= ~LOG_TVH_NOTIFY;
 
-  /* Check for full */
-  if (tvhlog_queue_full) {
-    pthread_mutex_unlock(&tvhlog_mutex);
-    return;
-  }
-
-  /* Check debug enabled (and cache config) */
-  options = tvhlog_options;
   if (severity >= LOG_DEBUG) {
     ok = 0;
     if (severity <= atomic_get(&tvhlog_level)) {
-      if (tvhlog_trace) {
-        ok = htsmsg_get_u32_or_default(tvhlog_trace, "all", 0);
-        ok = htsmsg_get_u32_or_default(tvhlog_trace, subsys, ok);
-      }
-      if (!ok && severity == LOG_DEBUG && tvhlog_debug) {
-        ok = htsmsg_get_u32_or_default(tvhlog_debug, "all", 0);
-        ok = htsmsg_get_u32_or_default(tvhlog_debug, subsys, ok);
-      }
+      ok = test_bit(subsys, tvhlog_trace);
+      if (!ok && severity == LOG_DEBUG)
+        ok = test_bit(subsys, tvhlog_debug);
     }
   } else {
     ok = 1;
   }
 
   /* Ignore */
-  if (!ok) {
+  if (!ok)
+    return;
+
+  pthread_mutex_lock(&tvhlog_mutex);
+
+  /* Check for full */
+  if (tvhlog_queue_full) {
     pthread_mutex_unlock(&tvhlog_mutex);
     return;
   }
@@ -312,11 +410,12 @@ void tvhlogv ( const char *file, int line,
   }
 
   /* Basic message */
+  options = tvhlog_options;
   l = 0;
   if (options & TVHLOG_OPT_THREAD) {
     tvh_strlcatf(buf, sizeof(buf), l, "tid %ld: ", (long)pthread_self());
   }
-  tvh_strlcatf(buf, sizeof(buf), l, "%s: ", subsys);
+  tvh_strlcatf(buf, sizeof(buf), l, "%s: ", tvhlog_subsystems[subsys].name);
   if (options & TVHLOG_OPT_FILELINE && severity >= LOG_DEBUG)
     tvh_strlcatf(buf, sizeof(buf), l, "(%s:%d) ", file, line);
   if (args)
@@ -350,13 +449,12 @@ void tvhlogv ( const char *file, int line,
 /*
  * Map args
  */
-void _tvhlog ( const char *file, int line,
-               int notify, int severity,
-               const char *subsys, const char *fmt, ... )
+void _tvhlog ( const char *file, int line, int severity,
+               int subsys, const char *fmt, ... )
 {
   va_list args;
   va_start(args, fmt);
-  tvhlogv(file, line, notify, severity, subsys, fmt, &args);
+  tvhlogv(file, line, severity, subsys, fmt, &args);
   va_end(args);
 }
 
@@ -365,10 +463,8 @@ void _tvhlog ( const char *file, int line,
  */
 #define HEXDUMP_WIDTH 16
 void
-_tvhlog_hexdump(const char *file, int line,
-                int notify, int severity,
-                const char *subsys,
-                const uint8_t *data, ssize_t len )
+_tvhlog_hexdump(const char *file, int line, int severity,
+                int subsys, const uint8_t *data, ssize_t len )
 {
   int i, c;
   char str[1024];
@@ -395,7 +491,7 @@ _tvhlog_hexdump(const char *file, int line,
       c++;
     }
     str[c] = '\0';
-    tvhlogv(file, line, notify, severity, subsys, str, NULL);
+    tvhlogv(file, line, severity, subsys, str, NULL);
     len  -= HEXDUMP_WIDTH;
     data += HEXDUMP_WIDTH;
   }
@@ -431,8 +527,8 @@ tvhlog_init ( int level, int options, const char *path )
   tvhlog_level   = level;
   tvhlog_options = options;
   tvhlog_path    = path ? strdup(path) : NULL;
-  tvhlog_trace   = NULL;
-  tvhlog_debug   = NULL;
+  memset(tvhlog_trace, 0, sizeof(tvhlog_trace));
+  memset(tvhlog_debug, 0, sizeof(tvhlog_debug));
   tvhlog_run     = 1;
   openlog("tvheadend", LOG_PID, LOG_DAEMON);
   pthread_mutex_init(&tvhlog_mutex, NULL);
@@ -467,8 +563,6 @@ tvhlog_end ( void )
   if (fp)
     fclose(fp);
   free(tvhlog_path);
-  htsmsg_destroy(tvhlog_debug);
-  htsmsg_destroy(tvhlog_trace);
   closelog();
 }
 

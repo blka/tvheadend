@@ -152,6 +152,7 @@ struct epggrab_module
     EPGGRAB_EXT,
   }                            type;      ///< Grabber type
   const char                   *id;       ///< Module identifier
+  int                          subsys;    ///< Module log subsystem
   const char                   *saveid;   ///< Module save identifier
   const char                   *name;     ///< Module name (for display)
   int                          enabled;   ///< Whether the module is enabled
@@ -256,6 +257,7 @@ struct epggrab_module_ota
   int  (*start) ( epggrab_ota_map_t *map, struct mpegts_mux *mm );
   int  (*tune)  ( epggrab_ota_map_t *map, epggrab_ota_mux_t *om,
                   struct mpegts_mux *mm );
+  void  *opaque;
 };
 
 /*

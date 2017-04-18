@@ -68,9 +68,7 @@ dvb_mux_##c##_class_##l##_enum (void *o, const char *lang)\
   int i;\
   htsmsg_t *m = htsmsg_create_list(), *e;\
   for (i = 0; i < ARRAY_SIZE(t); i++) {\
-    e = htsmsg_create_map(); \
-    htsmsg_add_str(e, "key", dvb_##t##2str(t[i]));\
-    htsmsg_add_str(e, "val", tvh_gettext_lang(lang, dvb_##t##2str(t[i])));\
+    e = htsmsg_create_key_val(dvb_##t##2str(t[i]), tvh_gettext_lang(lang, dvb_##t##2str(t[i]))); \
     htsmsg_add_msg(m, NULL, e);\
   }\
   return m;\
@@ -98,9 +96,7 @@ dvb_mux_##c##_class_##l##_enum (void *o, const char *lang)\
   int i;\
   htsmsg_t *m = htsmsg_create_list(), *e;\
   for (i = 0; i < ARRAY_SIZE(t); i++) {\
-    e = htsmsg_create_map(); \
-    htsmsg_add_str(e, "key", dvb_##t##2str(t[i]));\
-    htsmsg_add_str(e, "val", tvh_gettext_lang(lang, dvb_##t##2str(t[i])));\
+    e = htsmsg_create_key_val(dvb_##t##2str(t[i]), tvh_gettext_lang(lang, dvb_##t##2str(t[i]))); \
     htsmsg_add_msg(m, NULL, e);\
   }\
   return m;\
@@ -477,10 +473,12 @@ const idclass_t dvb_mux_dvbs_class =
     {
       MUX_PROP_STR("rolloff", N_("Rolloff"), dvbs, rolloff, "AUTO"),
       .desc     = N_("The rolloff used on the mux."),
+      .opts     = PO_ADVANCED,
     },
     {
       MUX_PROP_STR("pilot", N_("Pilot"), dvbs, pilot, "AUTO"),
       .desc     = N_("Enable/disable pilot tone."),
+      .opts     = PO_ADVANCED,
     },
     {
       .type     = PT_INT,
@@ -489,12 +487,13 @@ const idclass_t dvb_mux_dvbs_class =
       .desc     = N_("The stream ID used for the mux."),
       .off      = offsetof(dvb_mux_t, lm_tuning.dmc_fe_stream_id),
       .def.i	= DVB_NO_STREAM_ID_FILTER,
-      .opts     = PO_ADVANCED
+      .opts     = PO_EXPERT
     },
     {
       MUX_PROP_STR("pls_mode", N_("PLS mode"), dvbs, pls_mode, "ROOT"),
       .desc     = N_("The Physical Layer Scrambling (PLS) mode "
                      "used on the mux."),
+      .opts     = PO_EXPERT,
     },
     {
       .type     = PT_U32,
@@ -504,7 +503,7 @@ const idclass_t dvb_mux_dvbs_class =
                      "used on the mux."),
       .off      = offsetof(dvb_mux_t, lm_tuning.dmc_fe_pls_code),
       .def.u32	= 1,
-      .opts     = PO_ADVANCED
+      .opts     = PO_EXPERT
     },
     {
       .type     = PT_STR,
@@ -944,7 +943,7 @@ dvb_mux_create_instances ( mpegts_mux_t *mm )
   mpegts_network_link_t *mnl;
   LIST_FOREACH(mnl, &mm->mm_network->mn_inputs, mnl_mn_link) {
     mpegts_input_t *mi = mnl->mnl_input;
-    if (mi->mi_is_enabled(mi, mm, 0, -1))
+    if (mi->mi_is_enabled(mi, mm, 0, -1) != MI_IS_ENABLED_NEVER)
       mi->mi_create_mux_instance(mi, mm);
   }
 }
@@ -1013,7 +1012,7 @@ dvb_mux_create0
     idc = &dvb_mux_dab_class;
     delsys = DVB_SYS_DAB;
   } else {
-    tvherror("dvb", "unknown FE type %d", ln->ln_type);
+    tvherror(LS_DVB, "unknown FE type %d", ln->ln_type);
     return NULL;
   }
 

@@ -40,7 +40,8 @@ typedef enum {
 typedef enum {
   PROFILE_SVF_NONE = 0,
   PROFILE_SVF_SD,
-  PROFILE_SVF_HD
+  PROFILE_SVF_HD,
+  PROFILE_SVF_UHD
 } profile_svfilter_t;
 
 struct profile;
@@ -130,6 +131,8 @@ typedef struct profile {
   int pro_timeout;
   int pro_restart;
   int pro_contaccess;
+  int pro_ca_timeout;
+  int pro_swservice;
   int pro_svfilter;
 
   void (*pro_free)(struct profile *pro);

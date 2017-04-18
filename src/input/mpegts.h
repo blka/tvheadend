@@ -106,9 +106,9 @@ int mpegts_pid_del_group ( mpegts_apids_t *pids, mpegts_apids_t *vals );
 int mpegts_pid_find_windex ( mpegts_apids_t *pids, uint16_t pid, uint16_t weight );
 int mpegts_pid_find_rindex ( mpegts_apids_t *pids, uint16_t pid );
 static inline int mpegts_pid_wexists ( mpegts_apids_t *pids, uint16_t pid, uint16_t weight )
-  { return pids->all || mpegts_pid_find_windex(pids, pid, weight) >= 0; }
+  { return pids && (pids->all || mpegts_pid_find_windex(pids, pid, weight) >= 0); }
 static inline int mpegts_pid_rexists ( mpegts_apids_t *pids, uint16_t pid )
-  { return pids->all || mpegts_pid_find_rindex(pids, pid) >= 0; }
+  { return pids && (pids->all || mpegts_pid_find_rindex(pids, pid) >= 0); }
 int mpegts_pid_copy ( mpegts_apids_t *dst, mpegts_apids_t *src );
 int mpegts_pid_compare ( mpegts_apids_t *dst, mpegts_apids_t *src,
                          mpegts_apids_t *add, mpegts_apids_t *del );
@@ -134,7 +134,8 @@ struct mpegts_pcr {
   uint16_t pcr_pid;
 };
 
-#define MPEGTS_DATA_CC_RESTART (1<<0)
+#define MPEGTS_DATA_CC_RESTART		(1<<0)
+#define MPEGTS_DATA_REMOVE_SCRAMBLED	(1<<1)
 
 typedef int (*mpegts_table_callback_t)
   ( mpegts_table_t*, const uint8_t *buf, int len, int tableid );
@@ -419,6 +420,7 @@ typedef struct tsdebug_packet {
 struct mpegts_mux
 {
   idnode_t mm_id;
+  int      mm_refcount;
 
   /*
    * Identification
@@ -430,6 +432,9 @@ struct mpegts_mux
   uint16_t                mm_onid;
   uint16_t                mm_tsid;
   int                     mm_tsid_checks;
+  int                     mm_tsid_accept_zero_value;
+  tvhlog_limit_t          mm_tsid_loglimit;
+  int64_t                 mm_start_monoclock;
 
   int                     mm_update_pids_flag;
   mtimer_t                mm_update_pids_timer;
@@ -504,6 +509,7 @@ struct mpegts_mux
    */
 
   void (*mm_delete)           (mpegts_mux_t *mm, int delconf);
+  void (*mm_free)             (mpegts_mux_t *mm);
   htsmsg_t *(*mm_config_save) (mpegts_mux_t *mm, char *filename, size_t fsize);
   void (*mm_display_name)     (mpegts_mux_t*, char *buf, size_t len);
   int  (*mm_is_enabled)       (mpegts_mux_t *mm);
@@ -573,7 +579,6 @@ struct mpegts_service
   char    *s_dvb_charset;
   uint16_t s_dvb_prefcapid;
   int      s_dvb_prefcapid_lock;
-  uint16_t s_dvb_forcecaid;
   time_t   s_dvb_created;
   time_t   s_dvb_last_seen;
   time_t   s_dvb_check_seen;
@@ -650,6 +655,12 @@ struct mpegts_mux_sub
   int                       mms_weight;
 };
 
+enum mpegts_input_is_enabled {
+  MI_IS_ENABLED_RETRY = -1,
+  MI_IS_ENABLED_NEVER = 0,
+  MI_IS_ENABLED_OK = 1,
+};
+
 /* Input source */
 struct mpegts_input
 {
@@ -700,6 +711,7 @@ struct mpegts_input
   TAILQ_HEAD(,mpegts_packet)      mi_input_queue;
   uint64_t                        mi_input_queue_size;
   tvhlog_limit_t                  mi_input_queue_loglimit;
+  int                             mi_remove_scrambled_bits;
 
   /* Data processing/output */
   // Note: this lock (mi_output_lock) protects all the remaining
@@ -841,6 +853,9 @@ static inline mpegts_network_t *mpegts_network_find(const char *uuid)
 mpegts_mux_t *mpegts_network_find_mux
   (mpegts_network_t *mn, uint16_t onid, uint16_t tsid, int check);
 
+mpegts_service_t *mpegts_network_find_active_service
+  (mpegts_network_t *mn, uint16_t sid, mpegts_mux_t **rmm);
+
 void mpegts_network_class_delete ( const idclass_t *idc, int delconf );
 
 void mpegts_network_delete ( mpegts_network_t *mn, int delconf );
@@ -874,6 +889,25 @@ static inline mpegts_mux_t *mpegts_mux_find(const char *uuid)
   { mpegts_mux_t *mm = mpegts_mux_find(u); if (mm) mm->mm_delete(mm, delconf); }
 
 void mpegts_mux_delete ( mpegts_mux_t *mm, int delconf );
+
+void mpegts_mux_free ( mpegts_mux_t *mm );
+
+static inline void mpegts_mux_grab ( mpegts_mux_t *mm )
+{
+  int v = atomic_add(&mm->mm_refcount, 1);
+  assert(v > 0);
+}
+
+static inline int mpegts_mux_release ( mpegts_mux_t *mm )
+{
+  int v = atomic_dec(&mm->mm_refcount, 1);
+  assert(v > 0);
+  if (v == 1) {
+    mm->mm_free(mm);
+    return 1;
+  }
+  return 0;
+}
 
 void mpegts_mux_save ( mpegts_mux_t *mm, htsmsg_t *c );
 
@@ -968,7 +1002,7 @@ tsdebug_write(mpegts_mux_t *mm, uint8_t *buf, size_t len)
 #if ENABLE_TSDEBUG
   if (mm && mm->mm_tsdebug_fd2 >= 0)
     if (write(mm->mm_tsdebug_fd2, buf, len) != len)
-      tvherror("tsdebug", "unable to write input data (%i)", errno);
+      tvherror(LS_TSDEBUG, "unable to write input data (%i)", errno);
 #endif
 }
 
@@ -1011,7 +1045,7 @@ int mpegts_table_type
 mpegts_table_t *mpegts_table_add
   (mpegts_mux_t *mm, int tableid, int mask,
    mpegts_table_callback_t callback, void *opaque,
-   const char *name, int flags, int pid, int weight);
+   const char *name, int subsys, int flags, int pid, int weight);
 void mpegts_table_flush_all
   (mpegts_mux_t *mm);
 void mpegts_table_destroy ( mpegts_table_t *mt );

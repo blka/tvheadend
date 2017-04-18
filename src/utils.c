@@ -484,7 +484,7 @@ md5sum ( const char *str, int lowercase )
 #define FILE_MODE_BITS(x) (x&(S_IRWXU|S_IRWXG|S_IRWXO))
 
 int
-makedirs ( const char *subsys, const char *inpath, int mode,
+makedirs ( int subsys, const char *inpath, int mode,
            int mstrict, gid_t gid, uid_t uid )
 {
   int err, ok;
@@ -669,7 +669,7 @@ static void
 deferred_unlink_cb(void *s, int dearmed)
 {
   if (unlink((const char *)s))
-    tvherror("main", "unable to remove file '%s'", (const char *)s);
+    tvherror(LS_MAIN, "unable to remove file '%s'", (const char *)s);
   free(s);
 }
 
@@ -686,7 +686,7 @@ deferred_unlink_dir_cb(void *s, int dearmed)
   int l;
 
   if (unlink((const char *)du->filename))
-    tvherror("main", "unable to remove file '%s'", (const char *)du->filename);
+    tvherror(LS_MAIN, "unable to remove file '%s'", (const char *)du->filename);
 
   /* Remove all directories up to rootdir */
 
@@ -796,12 +796,8 @@ htsmsg_t *network_interfaces_enum(void *obj, const char *lang)
 
   if (ifnames) {
     struct if_nameindex *ifname;
-    for (ifname = ifnames; ifname->if_name; ifname++) {
-      htsmsg_t *entry = htsmsg_create_map();
-      htsmsg_add_str(entry, "key", ifname->if_name);
-      htsmsg_add_str(entry, "val", ifname->if_name);
-      htsmsg_add_msg(list, NULL, entry);
-    }
+    for (ifname = ifnames; ifname->if_name; ifname++)
+      htsmsg_add_msg(list, NULL, htsmsg_create_key_val(ifname->if_name, ifname->if_name));
     if_freenameindex(ifnames);
   }
 
@@ -809,4 +805,13 @@ htsmsg_t *network_interfaces_enum(void *obj, const char *lang)
 #else
   return NULL;
 #endif
+}
+
+const char *
+gmtime2local(time_t gmt, char *buf, size_t buflen)
+{
+  struct tm tm;
+  localtime_r(&gmt, &tm);
+  strftime(buf, buflen, "%F;%T(%z)", &tm);
+  return buf;
 }

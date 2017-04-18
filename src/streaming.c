@@ -26,6 +26,8 @@
 #include "service.h"
 #include "timeshift.h"
 
+static memoryinfo_t streaming_msg_memoryinfo = { .my_name = "Streaming message" };
+
 void
 streaming_pad_init(streaming_pad_t *sp)
 {
@@ -38,10 +40,10 @@ streaming_pad_init(streaming_pad_t *sp)
  *
  */
 void
-streaming_target_init(streaming_target_t *st, st_callback_t *cb, void *opaque,
-		      int reject_filter)
+streaming_target_init(streaming_target_t *st, streaming_ops_t *ops,
+                      void *opaque, int reject_filter)
 {
-  st->st_cb = cb;
+  st->st_ops = *ops;
   st->st_opaque = opaque;
   st->st_reject_filter = reject_filter;
 }
@@ -89,6 +91,19 @@ streaming_queue_deliver(void *opauqe, streaming_message_t *sm)
 /**
  *
  */
+static htsmsg_t *
+streaming_queue_info(void *opaque, htsmsg_t *list)
+{
+  streaming_queue_t *sq = opaque;
+  char buf[256];
+  snprintf(buf, sizeof(buf), "streaming queue %p size %zd", sq, sq->sq_size);
+  htsmsg_add_str(list, NULL, buf);
+  return list;
+}
+
+/**
+ *
+ */
 void
 streaming_queue_remove(streaming_queue_t *sq, streaming_message_t *sm)
 {
@@ -102,7 +117,12 @@ streaming_queue_remove(streaming_queue_t *sq, streaming_message_t *sm)
 void
 streaming_queue_init(streaming_queue_t *sq, int reject_filter, size_t maxsize)
 {
-  streaming_target_init(&sq->sq_st, streaming_queue_deliver, sq, reject_filter);
+  static streaming_ops_t ops = {
+    .st_cb   = streaming_queue_deliver,
+    .st_info = streaming_queue_info
+  };
+
+  streaming_target_init(&sq->sq_st, &ops, sq, reject_filter);
 
   pthread_mutex_init(&sq->sq_mutex, NULL);
   tvh_cond_init(&sq->sq_cond);
@@ -178,6 +198,7 @@ streaming_message_t *
 streaming_msg_create(streaming_message_type_t type)
 {
   streaming_message_t *sm = malloc(sizeof(streaming_message_t));
+  memoryinfo_alloc(&streaming_msg_memoryinfo, sizeof(*sm));
   sm->sm_type = type;
 #if ENABLE_TIMESHIFT
   sm->sm_time      = 0;
@@ -232,6 +253,8 @@ streaming_msg_clone(streaming_message_t *src)
 {
   streaming_message_t *dst = malloc(sizeof(streaming_message_t));
   streaming_start_t *ss;
+
+  memoryinfo_alloc(&streaming_msg_memoryinfo, sizeof(*dst));
 
   dst->sm_type      = src->sm_type;
 #if ENABLE_TIMESHIFT
@@ -358,6 +381,7 @@ streaming_msg_free(streaming_message_t *sm)
   default:
     abort();
   }
+  memoryinfo_free(&streaming_msg_memoryinfo, sizeof(*sm));
   free(sm);
 }
 
@@ -457,6 +481,8 @@ streaming_code2txt(int code)
     return N_("No access");
   case SM_CODE_NO_INPUT:
     return N_("No input detected");
+  case SM_CODE_NO_SPACE:
+    return N_("Not enough disk space");
 
   default:
     snprintf(ret, sizeof(ret), _("Unknown reason (%i)"), code);
@@ -557,4 +583,19 @@ streaming_component_audio_type2desc(int audio_type)
   }
 
   return N_("Reserved");
+}
+
+/*
+ *
+ */
+void streaming_init(void)
+{
+  memoryinfo_register(&streaming_msg_memoryinfo);
+}
+
+void streaming_done(void)
+{
+  pthread_mutex_lock(&global_lock);
+  memoryinfo_unregister(&streaming_msg_memoryinfo);
+  pthread_mutex_unlock(&global_lock);
 }

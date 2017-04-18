@@ -73,10 +73,10 @@ static void _epggrab_module_grab ( epggrab_module_int_t *mod )
 
   /* Process */
   if ( data ) {
-    tvhlog(LOG_INFO, mod->id, "grab took %"PRId64" seconds", mono2sec(tm2 - tm1));
+    tvhinfo(mod->subsys, "%s: grab took %"PRId64" seconds", mod->id, mono2sec(tm2 - tm1));
     epggrab_module_parse(mod, data);
   } else {
-    tvhlog(LOG_WARNING, mod->id, "grab returned no data");
+    tvhwarn(mod->subsys, "%s: grab returned no data", mod->id);
   }
 }
 
@@ -172,8 +172,10 @@ static void _epggrab_load ( void )
   } else {
     free(epggrab_conf.cron);
     epggrab_conf.cron = strdup("# Default config (00:04 and 12:04 everyday)\n4 */12 * * *");
-    LIST_FOREACH(mod, &epggrab_modules, link) // enable all OTA by default
-      if (mod->type == EPGGRAB_OTA) {
+    LIST_FOREACH(mod, &epggrab_modules, link) // enable only OTA EIT and OTA PSIP by default
+      if (mod->type == EPGGRAB_OTA &&
+          ((mod->subsys == LS_TBL_EIT && strcmp(mod->id, "eit") == 0) ||
+           mod->subsys == LS_PSIP)) {
         mod->enabled = 1;
         epggrab_activate_module(mod, 1);
       }
@@ -280,6 +282,7 @@ const idclass_t epggrab_class = {
                    "Note: this may cause unwanted changes to "
                    "already defined channel names."),
       .off    = offsetof(epggrab_conf_t, channel_rename),
+      .opts   = PO_ADVANCED,
       .group  = 1,
     },
     {
@@ -291,6 +294,7 @@ const idclass_t epggrab_class = {
                    "Note: this may cause unwanted changes to "
                    "already defined channel numbers."),
       .off    = offsetof(epggrab_conf_t, channel_renumber),
+      .opts   = PO_ADVANCED,
       .group  = 1,
     },
     {
@@ -302,6 +306,7 @@ const idclass_t epggrab_class = {
                    "Note: this may cause unwanted changes to "
                    "already defined channel icons."),
       .off    = offsetof(epggrab_conf_t, channel_reicon),
+      .opts   = PO_ADVANCED,
       .group  = 1,
     },
     {
@@ -361,7 +366,7 @@ const idclass_t epggrab_class = {
                    "time at most. If the EPG data is complete before "
                    "this limit, the mux is released sooner."),
       .off    = offsetof(epggrab_conf_t, ota_timeout),
-      .opts   = PO_ADVANCED,
+      .opts   = PO_EXPERT,
       .group  = 3,
     },
     {}

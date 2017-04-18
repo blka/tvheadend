@@ -255,7 +255,7 @@ mk_build_tracks(mk_muxer_t *mk, streaming_start_t *ss)
     tr->nextpts = PTS_UNSET;
 
     if (mk->webm && ssc->ssc_type != SCT_VP8 && ssc->ssc_type != SCT_VORBIS)
-      tvhwarn("mkv", "WEBM format supports only VP8+VORBIS streams (detected %s)",
+      tvhwarn(LS_MKV, "WEBM format supports only VP8+VORBIS streams (detected %s)",
               streaming_component_type2txt(ssc->ssc_type));
 
     switch(ssc->ssc_type) {
@@ -292,7 +292,11 @@ mk_build_tracks(mk_muxer_t *mk, streaming_start_t *ss)
 
     case SCT_MPEG2AUDIO:
       tracktype = 2;
-      codec_id = "A_MPEG/L3";
+      codec_id  = "A_MPEG/L2";
+      if (ssc->ssc_audio_version == 3)
+        codec_id = "A_MPEG/L3";
+      else if (ssc->ssc_audio_version == 1)
+        codec_id = "A_MPEG/L1";
       break;
 
     case SCT_AC3:
@@ -499,8 +503,7 @@ static void
 mk_write_queue(mk_muxer_t *mk, htsbuf_queue_t *q)
 {
   if(!mk->error && mk_write_to_fd(mk, q) && !MC_IS_EOS_ERROR(mk->error))
-    tvhlog(LOG_ERR, "mkv", "%s: Write failed -- %s", mk->filename,
-	   strerror(errno));
+    tvherror(LS_MKV, "%s: Write failed -- %s", mk->filename, strerror(errno));
 
   htsbuf_queue_flush(q);
 }
@@ -959,10 +962,13 @@ mk_write_frame_i(mk_muxer_t *mk, mk_track_t *t, th_pkt_t *pkt)
 {
   int64_t pts = pkt->pkt_pts, delta, nxt;
   unsigned char c_delta_flags[3];
+  int video = SCT_ISVIDEO(pkt->pkt_type);
+  int keyframe = 0, skippable = 0;
 
-  int keyframe  = pkt->pkt_frametype < PKT_P_FRAME;
-  int skippable = pkt->pkt_frametype == PKT_B_FRAME;
-  int vkeyframe = SCT_ISVIDEO(t->type) && keyframe;
+  if (video) {
+    keyframe  = pkt->v.pkt_frametype < PKT_P_FRAME;
+    skippable = pkt->v.pkt_frametype == PKT_B_FRAME;
+  }
 
   uint8_t *data = pktbuf_ptr(pkt->pkt_payload);
   size_t len = pktbuf_len(pkt->pkt_payload);
@@ -975,7 +981,7 @@ mk_write_frame_i(mk_muxer_t *mk, mk_track_t *t, th_pkt_t *pkt)
     pts = t->nextpts;
 
   if(pts != PTS_UNSET) {
-    t->nextpts = pts + (pkt->pkt_duration >> pkt->pkt_field);
+    t->nextpts = pts + (pkt->pkt_duration >> (video ? pkt->v.pkt_field : 0));
 
     nxt = ts_rescale(t->nextpts, 1000000000 / MATROSKA_TIMESCALE);
     pts = ts_rescale(pts,        1000000000 / MATROSKA_TIMESCALE);
@@ -984,7 +990,7 @@ mk_write_frame_i(mk_muxer_t *mk, mk_track_t *t, th_pkt_t *pkt)
       mk->totduration = nxt;
 
     delta = pts - mk->cluster_tc;
-    if((vkeyframe || !mk->has_video) && (delta > 30000ll || delta < -30000ll))
+    if((keyframe || !mk->has_video) && (delta > 30000ll || delta < -30000ll))
       mk_close_cluster(mk);
 
   } else {
@@ -993,7 +999,7 @@ mk_write_frame_i(mk_muxer_t *mk, mk_track_t *t, th_pkt_t *pkt)
 
   if(mk->cluster) {
 
-    if(vkeyframe &&
+    if(keyframe &&
        (mk->cluster->hq_size > mk->cluster_maxsize ||
         mk->cluster_last_close + sec2mono(1) < mclk()))
       mk_close_cluster(mk);
@@ -1019,7 +1025,7 @@ mk_write_frame_i(mk_muxer_t *mk, mk_track_t *t, th_pkt_t *pkt)
     delta = 0;
   }
 
-  if(mk->addcue && vkeyframe) {
+  if(mk->addcue && keyframe) {
     mk->addcue = 0;
     addcue(mk, pts, t->tracknum);
   }
@@ -1102,26 +1108,29 @@ mk_mux_write_pkt(mk_muxer_t *mk, th_pkt_t *pkt)
   }
 
   mark = 0;
-  if(pkt->pkt_channels != t->channels &&
-     pkt->pkt_channels) {
-    mark = 1;
-    t->channels = pkt->pkt_channels;
-  }
-  if(pkt->pkt_aspect_num != t->aspect_num &&
-     pkt->pkt_aspect_num) {
-    mark = 1;
-    t->aspect_num = pkt->pkt_aspect_num;
-  }
-  if(pkt->pkt_aspect_den != t->aspect_den &&
-     pkt->pkt_aspect_den) {
-    mark = 1;
-    t->aspect_den = pkt->pkt_aspect_den;
-  }
-  if(pkt->pkt_sri != t->sri &&
-     pkt->pkt_sri) {
-    mark = 1;
-    t->sri = pkt->pkt_sri;
-    t->ext_sri = pkt->pkt_ext_sri;
+  if(SCT_ISAUDIO(pkt->pkt_type)) {
+    if(pkt->a.pkt_channels != t->channels &&
+       pkt->a.pkt_channels) {
+      mark = 1;
+      t->channels = pkt->a.pkt_channels;
+    }
+    if(pkt->a.pkt_sri != t->sri &&
+       pkt->a.pkt_sri) {
+      mark = 1;
+      t->sri = pkt->a.pkt_sri;
+      t->ext_sri = pkt->a.pkt_ext_sri;
+    }
+  } else if (SCT_ISVIDEO(pkt->pkt_type)) {
+    if(pkt->v.pkt_aspect_num != t->aspect_num &&
+       pkt->v.pkt_aspect_num) {
+      mark = 1;
+      t->aspect_num = pkt->v.pkt_aspect_num;
+    }
+    if(pkt->v.pkt_aspect_den != t->aspect_den &&
+       pkt->v.pkt_aspect_den) {
+      mark = 1;
+      t->aspect_den = pkt->v.pkt_aspect_den;
+    }
   }
   if(pkt->pkt_commercial != t->commercial &&
      pkt->pkt_commercial != COMMERCIAL_UNKNOWN) {
@@ -1181,8 +1190,8 @@ mk_mux_close(mk_muxer_t *mk)
       mk_write_master(mk, 0x1549a966, mk_build_segment_info(mk));
     else {
       mk->error = errno;
-      tvhlog(LOG_ERR, "mkv", "%s: Unable to write duration, seek failed -- %s",
-	     mk->filename, strerror(errno));
+      tvherror(LS_MKV, "%s: Unable to write duration, seek failed -- %s",
+	       mk->filename, strerror(errno));
     }
 
     // Rewrite segment header to update total size
@@ -1190,14 +1199,14 @@ mk_mux_close(mk_muxer_t *mk)
       mk_write_segment_header(mk, totsize - mk->segment_header_pos - 12);
     } else {
       mk->error = errno;
-      tvhlog(LOG_ERR, "mkv", "%s: Unable to write total size, seek failed -- %s",
-	     mk->filename, strerror(errno));
+      tvherror(LS_MKV, "%s: Unable to write total size, seek failed -- %s",
+	       mk->filename, strerror(errno));
     }
 
     if(close(mk->fd)) {
       mk->error = errno;
-      tvhlog(LOG_ERR, "mkv", "%s: Unable to close the file descriptor, close failed -- %s",
-	     mk->filename, strerror(errno));
+      tvherror(LS_MKV, "%s: Unable to close the file descriptor, close failed -- %s",
+	       mk->filename, strerror(errno));
     }
   }
 
@@ -1334,23 +1343,23 @@ mkv_muxer_open_file(muxer_t *m, const char *filename)
   mk_muxer_t *mk = (mk_muxer_t*)m;
   int fd, permissions = mk->m_config.m_file_permissions;
 
-  tvhtrace("mkv", "Creating file \"%s\" with file permissions \"%o\"",
+  tvhtrace(LS_MKV, "Creating file \"%s\" with file permissions \"%o\"",
            filename, permissions);
 
   fd = open(filename, O_WRONLY | O_CREAT | O_TRUNC, permissions);
 
   if(fd < 0) {
     mk->error = errno;
-    tvhlog(LOG_ERR, "mkv", "%s: Unable to create file, open failed -- %s",
-	   mk->filename, strerror(errno));
+    tvherror(LS_MKV, "%s: Unable to create file, open failed -- %s",
+	     mk->filename, strerror(errno));
     mk->m_errors++;
     return -1;
   }
 
   /* bypass umask settings */
   if (fchmod(fd, permissions))
-    tvhlog(LOG_ERR, "mkv", "%s: Unable to change permissions -- %s",
-           filename, strerror(errno));
+    tvherror(LS_MKV, "%s: Unable to change permissions -- %s",
+             filename, strerror(errno));
 
   mk->filename = strdup(filename);
   mk->fd = fd;

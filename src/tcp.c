@@ -41,6 +41,8 @@
 #include "notify.h"
 #include "access.h"
 #include "dvr/dvr.h"
+#define COMPAT_IPTOS
+#include "compat.h"
 
 #if ENABLE_LIBSYSTEMD_DAEMON
 #include <systemd/sd-daemon.h>
@@ -230,7 +232,7 @@ static int
 tcp_fill_htsbuf_from_fd(int fd, htsbuf_queue_t *hq)
 {
   htsbuf_data_t *hd = TAILQ_LAST(&hq->hq_q, htsbuf_data_queue);
-  int c;
+  int c, r;
 
   if(hd != NULL) {
     /* Fill out any previous buffer */
@@ -238,12 +240,14 @@ tcp_fill_htsbuf_from_fd(int fd, htsbuf_queue_t *hq)
 
     if(c > 0) {
 
-      c = read(fd, hd->hd_data + hd->hd_data_len, c);
-      if(c < 1)
+      do {
+        r = read(fd, hd->hd_data + hd->hd_data_len, c);
+      } while (r < 0 && ERRNO_AGAIN(errno));
+      if(r < 1)
 	return -1;
 
-      hd->hd_data_len += c;
-      hq->hq_size += c;
+      hd->hd_data_len += r;
+      hq->hq_size += r;
       return 0;
     }
   }
@@ -253,16 +257,18 @@ tcp_fill_htsbuf_from_fd(int fd, htsbuf_queue_t *hq)
   hd->hd_data_size = 1000;
   hd->hd_data = malloc(hd->hd_data_size);
 
-  c = read(fd, hd->hd_data, hd->hd_data_size);
-  if(c < 1) {
+  do {
+    r = read(fd, hd->hd_data, hd->hd_data_size);
+  } while (r < 0 && ERRNO_AGAIN(errno));
+  if(r < 1) {
     free(hd->hd_data);
     free(hd);
     return -1;
   }
-  hd->hd_data_len = c;
+  hd->hd_data_len = r;
   hd->hd_data_off = 0;
   TAILQ_INSERT_TAIL(&hq->hq_q, hd, hd_link);
-  hq->hq_size += c;
+  hq->hq_size += r;
   return 0;
 }
 
@@ -398,12 +404,12 @@ tcp_socket_dead(int fd)
  *
  */
 char *
-tcp_get_str_from_ip(const struct sockaddr *sa, char *dst, size_t maxlen)
+tcp_get_str_from_ip(const struct sockaddr_storage *sa, char *dst, size_t maxlen)
 {
   if (sa == NULL || dst == NULL)
     return NULL;
 
-  switch(sa->sa_family)
+  switch(sa->ss_family)
   {
     case AF_INET:
       inet_ntop(AF_INET, &(((struct sockaddr_in*)sa)->sin_addr), dst, maxlen);
@@ -422,18 +428,18 @@ tcp_get_str_from_ip(const struct sockaddr *sa, char *dst, size_t maxlen)
 /**
  *
  */
-struct sockaddr *
-tcp_get_ip_from_str(const char *src, struct sockaddr *sa)
+struct sockaddr_storage *
+tcp_get_ip_from_str(const char *src, struct sockaddr_storage *sa)
 {
   if (sa == NULL || src == NULL)
     return NULL;
 
   if (strstr(src, ":")) {
-    sa->sa_family = AF_INET6;
+    sa->ss_family = AF_INET6;
     if (inet_pton(AF_INET6, src, &(((struct sockaddr_in6*)sa)->sin6_addr)) != 1)
       return NULL;
   } else if (strstr(src, ".")) {
-    sa->sa_family = AF_INET;
+    sa->ss_family = AF_INET;
     if (inet_pton(AF_INET, src, &(((struct sockaddr_in*)sa)->sin_addr)) != 1)
       return NULL;
   } else {
@@ -540,7 +546,7 @@ try_again:
 
     if (c1 && c2) {
       if (started + sec2mono(3) < mclk()) {
-        tvherror("tcp", "multiple connections are not allowed for user '%s' from '%s' "
+        tvherror(LS_TCP, "multiple connections are not allowed for user '%s' from '%s' "
                         "(limit %u, streaming limit %u, active streaming %u, DVR %u)",
                  aa->aa_username ?: "", aa->aa_representative ?: "",
                  aa->aa_conn_limit, aa->aa_conn_limit_streaming,
@@ -673,7 +679,7 @@ tcp_server_loop(void *aux)
     if(r < 0) {
       if (ERRNO_AGAIN(-r))
         continue;
-      tvherror("tcp", "tcp_server_loop: tvhpoll_wait: %s", strerror(errno));
+      tvherror(LS_TCP, "tcp_server_loop: tvhpoll_wait: %s", strerror(errno));
       continue;
     }
 
@@ -738,7 +744,7 @@ next:
       tvhthread_create(&tsl->tid, NULL, tcp_server_start, tsl, "tcp-start");
     }
   }
-  tvhtrace("tcp", "server thread finished");
+  tvhtrace(LS_TCP, "server thread finished");
   return NULL;
 }
 
@@ -752,7 +758,7 @@ static void *tcp_server_create_new
 #else
 void *tcp_server_create
 #endif
-  (const char *subsystem, const char *name, const char *bindaddr,
+  (int subsystem, const char *name, const char *bindaddr,
    int port, tcp_server_ops_t *ops, void *opaque)
 {
   int fd, x;
@@ -775,8 +781,8 @@ void *tcp_server_create
   x = getaddrinfo(bindaddr, port_buf, &hints, &res);
 
   if(x != 0) {
-    tvhlog(LOG_ERR, "tcp", "getaddrinfo: %s: %s", bindaddr != NULL ? bindaddr : "*",
-      x == EAI_SYSTEM ? strerror(errno) : gai_strerror(x));
+    tvherror(LS_TCP, "getaddrinfo: %s: %s", bindaddr != NULL ? bindaddr : "*",
+             x == EAI_SYSTEM ? strerror(errno) : gai_strerror(x));
     return NULL;
   }
 
@@ -811,12 +817,12 @@ void *tcp_server_create
 
   if(x != 0)
   {
-    tvhlog(LOG_ERR, "tcp", "bind: %s:%i: %s", bindaddr != NULL ? bindaddr : "*", port, strerror(errno));
+    tvherror(LS_TCP, "bind: %s:%i: %s", bindaddr != NULL ? bindaddr : "*", port, strerror(errno));
     close(fd);
     return NULL;
   }
 
-  listen(fd, 1);
+  listen(fd, 511);
 
   ts = malloc(sizeof(tcp_server_t));
   ts->serverfd = fd;
@@ -824,8 +830,8 @@ void *tcp_server_create
   ts->ops    = *ops;
   ts->opaque = opaque;
 
-  tcp_get_str_from_ip((const struct sockaddr *)&bound, buf, sizeof(buf));
-  tvhlog(LOG_INFO, subsystem, "Starting %s server %s:%d", name, buf, htons(IP_PORT(bound)));
+  tcp_get_str_from_ip(&bound, buf, sizeof(buf));
+  tvhinfo(subsystem, "Starting %s server %s:%d", name, buf, htons(IP_PORT(bound)));
 
   return ts;
 }
@@ -836,7 +842,7 @@ void *tcp_server_create
  */
 void *
 tcp_server_create
-  (const char *subsystem, const char *name, const char *bindaddr,
+  (int subsystem, const char *name, const char *bindaddr,
    int port, tcp_server_ops_t *ops, void *opaque)
 {
   int sd_fds_num, i, fd;
@@ -862,7 +868,7 @@ tcp_server_create
     memset(&bound, 0, sizeof(bound));
     s_len = sizeof(bound);
     if (getsockname(fd, (struct sockaddr *) &bound, &s_len) != 0) {
-      tvhlog(LOG_ERR, "tcp", "getsockname failed: %s", strerror(errno));
+      tvherror(LS_TCP, "getsockname failed: %s", strerror(errno));
       continue;
     }
     switch (bound.ss_family) {
@@ -890,12 +896,12 @@ tcp_server_create
     ts->bound  = bound;
     ts->ops    = *ops;
     ts->opaque = opaque;
-    tcp_get_str_from_ip((const struct sockaddr *)&bound, buf, sizeof(buf));
-    tvhlog(LOG_INFO, subsystem, "Starting %s server %s:%d (systemd)", name, buf, htons(IP_PORT(bound)));
+    tcp_get_str_from_ip(&bound, buf, sizeof(buf));
+    tvhinfo(subsystem, "Starting %s server %s:%d (systemd)", name, buf, htons(IP_PORT(bound)));
   } else {
     /* no systemd-managed socket found, create a new one */
-    tvhlog(LOG_INFO, "tcp", "No systemd socket: creating a new one");
-    ts =  tcp_server_create_new(subsystem, name, bindaddr, port, ops, opaque);
+    tvhinfo(LS_TCP, "No systemd socket: creating a new one");
+    ts = tcp_server_create_new(subsystem, name, bindaddr, port, ops, opaque);
   }
 
   return ts;
@@ -1068,7 +1074,7 @@ tcp_server_connections ( void )
     if (!tsl->status) continue;
     c++;
     e = htsmsg_create_map();
-    tcp_get_str_from_ip((struct sockaddr*)&tsl->peer, buf, sizeof(buf));
+    tcp_get_str_from_ip(&tsl->peer, buf, sizeof(buf));
     htsmsg_add_u32(e, "id", tsl->id);
     htsmsg_add_str(e, "peer", buf);
     htsmsg_add_s64(e, "started", tsl->started);
@@ -1141,7 +1147,7 @@ tcp_server_done(void)
   t = mclk();
   while (LIST_FIRST(&tcp_server_active) != NULL) {
     if (t + sec2mono(5) < mclk())
-      tvhtrace("tcp", "tcp server %p active too long", LIST_FIRST(&tcp_server_active));
+      tvhtrace(LS_TCP, "tcp server %p active too long", LIST_FIRST(&tcp_server_active));
     pthread_mutex_unlock(&global_lock);
     tvh_safe_usleep(20000);
     pthread_mutex_lock(&global_lock);

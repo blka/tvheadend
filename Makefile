@@ -21,8 +21,9 @@
 #
 
 include $(dir $(lastword $(MAKEFILE_LIST))).config.mk
-PROG    := $(BUILDDIR)/tvheadend
-LANGUAGES ?= bg cs da de en_US en_GB es et fa fi fr he hr hu it lv nl pl pt ru sv uk
+include $(dir $(lastword $(MAKEFILE_LIST)))Makefile.common
+PROG      := $(BUILDDIR)/tvheadend
+LANGUAGES ?= $(LANGUAGES_ALL)
 
 #
 # Common compiler flags
@@ -163,7 +164,8 @@ vpath %.h $(ROOTDIR)
 # Other config
 #
 
-BUNDLE_FLAGS-${CONFIG_ZLIB} = -z
+BUNDLE_FLAGS-${CONFIG_ZLIB} += -z
+BUNDLE_FLAGS-${CONFIG_PNGQUANT} += -q
 BUNDLE_FLAGS = ${BUNDLE_FLAGS-yes}
 
 #
@@ -338,7 +340,8 @@ SRCS-2 += \
 	src/muxer.c \
 	src/muxer/muxer_pass.c \
 	src/muxer/ebml.c \
-	src/muxer/muxer_mkv.c
+	src/muxer/muxer_mkv.c \
+	src/muxer/muxer_audioes.c
 
 SRCS += $(SRCS-2)
 I18N-C += $(SRCS-2)

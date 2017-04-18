@@ -102,7 +102,7 @@ dvr_vfs_refresh_entry(dvr_entry_t *de)
       filename = htsmsg_get_str(m, "filename");
       if(filename == NULL ||
          statvfs(filename, &vst) < 0 || stat(filename, &st) < 0) {
-        tvhlog(LOG_ERR, "dvr", "unable to stat file '%s'", filename);
+        tvherror(LS_DVR, "unable to stat file '%s'", filename);
         goto rem;
       }
       vfs = dvr_vfs_find(vfs, tvh_fsid(vst.f_fsid));
@@ -174,7 +174,7 @@ dvr_vfs_update_filename(const char *filename, htsmsg_t *fdata)
  * Only "Keep until space needed" recordings are deleted, starting with the oldest one
  */
 static int64_t
-dvr_disk_space_cleanup(dvr_config_t *cfg)
+dvr_disk_space_cleanup(dvr_config_t *cfg, int include_active)
 {
   dvr_entry_t *de, *oldest;
   time_t stoptime;
@@ -205,18 +205,18 @@ dvr_disk_space_cleanup(dvr_config_t *cfg)
   /* If calling this function to fast after the previous call, statvfs might be wrong/not updated yet */
   /* So we are risking to delete more files than needed, so allow 10s for the system to handle previous deletes */
   if (dvr_disk_space_config_lastdelete + sec2mono(10) > mclk()) {
-    tvhlog(LOG_WARNING, "dvr","disk space cleanup for config \"%s\" is not allowed now", configName);
+    tvhwarn(LS_DVR,"disk space cleanup for config \"%s\" is not allowed now", configName);
     return -1;
   }
 
   if (diskBytes < requiredBytes) {
-    tvhlog(LOG_WARNING, "dvr","disk space cleanup for config \"%s\", required free space \"%"PRId64" MiB\" is smaller than the total disk size!",
-           configName, TOMIB(requiredBytes));
+    tvhwarn(LS_DVR,"disk space cleanup for config \"%s\", required free space \"%"PRId64" MiB\" is smaller than the total disk size!",
+            configName, TOMIB(requiredBytes));
     if (maximalBytes >= usedBytes)
       return -1;
   }
 
-  tvhtrace("dvr", "disk space cleanup for config \"%s\", required/current free space \"%"PRId64"/%"PRId64" MiB\", required/current used space \"%"PRId64"/%"PRId64" MiB\"",
+  tvhtrace(LS_DVR, "disk space cleanup for config \"%s\", required/current free space \"%"PRId64"/%"PRId64" MiB\", required/current used space \"%"PRId64"/%"PRId64" MiB\"",
            configName, TOMIB(requiredBytes), TOMIB(availBytes), TOMIB(maximalBytes), TOMIB(usedBytes));
 
   while (availBytes < requiredBytes || ((maximalBytes < usedBytes) && cfg->dvr_cleanup_threshold_used)) {
@@ -231,7 +231,7 @@ dvr_disk_space_cleanup(dvr_config_t *cfg)
       if (dvr_entry_get_stop_time(de) > stoptime)
         continue;
 
-      if (dvr_entry_get_removal_days(de) != DVR_RET_SPACE) // only remove the allowed ones
+      if (dvr_entry_get_removal_days(de) != DVR_REM_SPACE) // only remove the allowed ones
         continue;
 
       if (dvr_get_filename(de) == NULL || dvr_get_filesize(de, DVR_FILESIZE_TOTAL) <= 0)
@@ -258,32 +258,33 @@ dvr_disk_space_cleanup(dvr_config_t *cfg)
       localtime_r(&stoptime, &tm);
       if (strftime(tbuf, sizeof(tbuf), "%F %T", &tm) <= 0)
         *tbuf = 0;
-      tvhlog(LOG_INFO, "dvr","Delete \"until space needed\" recording \"%s\" with stop time \"%s\" and file size \"%"PRId64" MB\"",
-             lang_str_get(oldest->de_title, NULL), tbuf, TOMIB(fileSize));
+      tvhinfo(LS_DVR,"Delete \"until space needed\" recording \"%s\" with stop time \"%s\" and file size \"%"PRId64" MB\"",
+              lang_str_get(oldest->de_title, NULL), tbuf, TOMIB(fileSize));
 
       dvr_disk_space_config_lastdelete = mclk();
-      if (dvr_entry_get_retention_days(oldest) == DVR_RET_ONREMOVE) {
-        dvr_entry_delete(oldest);     // delete actual file
-        dvr_entry_destroy(oldest, 1); // also delete database entry
-      } else {
-        if (dvr_entry_delete(oldest)) // delete actual file
-          idnode_changed(&oldest->de_id);
-      }
+      dvr_entry_cancel_remove(oldest, 0); /* Remove stored files and mark as "removed" */
     } else {
-      tvhlog(LOG_WARNING, "dvr", "%s \"until space needed\" recordings found for config \"%s\", you are running out of disk space very soon!",
-             loops > 0 ? "Not enough" : "No", configName);
+      /* Stop active recordings if cleanup is not possible */
+      if (loops == 0 && include_active) {
+        tvhwarn(LS_DVR, "No \"until space needed\" recordings found for config \"%s\", aborting active recordings now!", configName);
+        LIST_FOREACH(de, &dvrentries, de_global_link) {
+          if (de->de_sched_state != DVR_RECORDING || !de->de_config || de->de_config != cfg)
+            continue;
+          dvr_stop_recording(de, SM_CODE_NO_SPACE, 1, 0);
+        }
+      }
       goto finish;
     }
 
     loops++;
     if (loops >= 10) {
-      tvhlog(LOG_WARNING, "dvr", "Not able to clear the required disk space after deleting %i \"until space needed\" recordings...", loops);
+      tvhwarn(LS_DVR, "Not able to clear the required disk space after deleting %i \"until space needed\" recordings...", loops);
       goto finish;
     }
   }
 
 finish:
-  tvhtrace("dvr", "disk space cleanup for config \"%s\", cleared \"%"PRId64" MB\" of disk space, new free disk space \"%"PRId64" MiB\", new used disk space \"%"PRId64" MiB\"",
+  tvhtrace(LS_DVR, "disk space cleanup for config \"%s\", cleared \"%"PRId64" MB\" of disk space, new free disk space \"%"PRId64" MiB\", new used disk space \"%"PRId64" MiB\"",
            configName, TOMIB(clearedBytes), TOMIB(availBytes), TOMIB(usedBytes));
 
   return clearedBytes;
@@ -332,17 +333,17 @@ dvr_disk_space_check()
             continue;
 
           if (availBytes < requiredBytes) {
-            tvhlog(LOG_WARNING, "dvr","running out of free disk space for dvr config \"%s\", required free space \"%"PRId64" MiB\", current free space \"%"PRId64" MiB\"",
-                   cfg != dvr_config_find_by_name(NULL) ? cfg->dvr_config_name : "Default profile",
-                   TOMIB(requiredBytes), TOMIB(availBytes));
+            tvhwarn(LS_DVR,"running out of free disk space for dvr config \"%s\", required free space \"%"PRId64" MiB\", current free space \"%"PRId64" MiB\"",
+                    cfg != dvr_config_find_by_name(NULL) ? cfg->dvr_config_name : "Default profile",
+                    TOMIB(requiredBytes), TOMIB(availBytes));
           } else {
-            tvhlog(LOG_WARNING, "dvr","running out of used disk space for dvr config \"%s\", required used space \"%"PRId64" MiB\", current used space \"%"PRId64" MiB\"",
-                   cfg != dvr_config_find_by_name(NULL) ? cfg->dvr_config_name : "Default profile",
-                   TOMIB(maximalBytes), TOMIB(usedBytes));
+            tvhwarn(LS_DVR,"running out of used disk space for dvr config \"%s\", required used space \"%"PRId64" MiB\", current used space \"%"PRId64" MiB\"",
+                    cfg != dvr_config_find_by_name(NULL) ? cfg->dvr_config_name : "Default profile",
+                    TOMIB(maximalBytes), TOMIB(usedBytes));
           }
 
           /* only cleanup one directory at the time as the system needs time to delete the actual files */
-          dvr_disk_space_cleanup(de->de_config);
+          dvr_disk_space_cleanup(de->de_config, 1);
           cleanupDone = 1;
           dvr_disk_space_config_idx = idx;
           break;
@@ -351,7 +352,7 @@ dvr_disk_space_check()
           goto checking;
       } else {
 checking:
-        tvhtrace("dvr", "checking free and used disk space for config \"%s\" : OK",
+        tvhtrace(LS_DVR, "checking free and used disk space for config \"%s\" : OK",
                cfg != dvr_config_find_by_name(NULL) ? cfg->dvr_config_name : "Default profile");
       }
     }
@@ -427,6 +428,37 @@ dvr_get_disk_space_cb(void *aux)
     tasklet_arm(&dvr_disk_space_tasklet, dvr_get_disk_space_tcb, path);
   }
   mtimer_arm_rel(&dvr_disk_space_timer, dvr_get_disk_space_cb, NULL, sec2mono(15));
+}
+
+/**
+ * Returns the available disk space for a new recording.
+ * If '0' (= below configured minimum), a new recording should not be started.
+ */
+int64_t
+dvr_vfs_rec_start_check(dvr_config_t *cfg)
+{
+  struct statvfs diskdata;
+  dvr_vfs_t *dvfs;
+  int64_t availBytes, requiredBytes, usedBytes, maximalBytes, cleanedBytes;
+
+  lock_assert(&global_lock);
+  if (!cfg || !cfg->dvr_enabled || statvfs(cfg->dvr_storage, &diskdata) == -1)
+    return 0;
+  availBytes    = diskdata.f_bsize * (int64_t)diskdata.f_bavail;
+  requiredBytes = MIB(cfg->dvr_cleanup_threshold_free);
+  maximalBytes  = MIB(cfg->dvr_cleanup_threshold_used);
+  dvfs          = dvr_vfs_find(NULL, tvh_fsid(diskdata.f_fsid));
+  usedBytes     = dvfs->used_size;
+
+  if (availBytes < requiredBytes || ((maximalBytes < usedBytes) && cfg->dvr_cleanup_threshold_used)) {
+    /* Not enough space to start recording, check if cleanup helps */
+    cleanedBytes = dvr_disk_space_cleanup(cfg, 0);
+    availBytes += cleanedBytes;
+    usedBytes -= cleanedBytes;
+    if (availBytes < requiredBytes || ((maximalBytes < usedBytes) && cfg->dvr_cleanup_threshold_used))
+      return 0;
+  }
+  return availBytes;
 }
 
 /**

@@ -415,7 +415,7 @@ mpegts_network_create0
   /* Setup idnode */
   if (idnode_insert(&mn->mn_id, uuid, idc, 0)) {
     if (uuid)
-      tvherror("mpegts", "invalid network uuid '%s'", uuid);
+      tvherror(LS_MPEGTS, "invalid network uuid '%s'", uuid);
     free(mn);
     return NULL;
   }
@@ -449,7 +449,7 @@ mpegts_network_create0
   /* Name */
   if (netname) mn->mn_network_name = strdup(netname);
   mn->mn_display_name(mn, buf, sizeof(buf));
-  tvhtrace("mpegts", "created network %s", buf);
+  tvhtrace(LS_MPEGTS, "created network %s", buf);
 
   return mn;
 }
@@ -475,7 +475,7 @@ mpegts_network_set_nid
     return 0;
   mn->mn_nid = nid;
   mn->mn_display_name(mn, buf, sizeof(buf));
-  tvhdebug("mpegts", "%s - set nid %04X (%d)", buf, nid, nid);
+  tvhdebug(LS_MPEGTS, "%s - set nid %04X (%d)", buf, nid, nid);
   return 1;
 }
 
@@ -489,7 +489,7 @@ mpegts_network_set_network_name
     if (name && name[0] && strcmp(name, mn->mn_network_name ?: "")) {
       tvh_str_update(&mn->mn_network_name, name);
       mn->mn_display_name(mn, buf, sizeof(buf));
-      tvhdebug("mpegts", "%s - set name %s", buf, name);
+      tvhdebug(LS_MPEGTS, "%s - set name %s", buf, name);
       save = 1;
     }
   }
@@ -537,9 +537,7 @@ mpegts_network_wizard_get
     mi->mi_display_name(mi, buf, sizeof(buf));
     htsmsg_add_str(m, "input_name", buf);
     l = htsmsg_create_list();
-    e = htsmsg_create_map();
-    htsmsg_add_str(e, "key", idc->ic_class);
-    htsmsg_add_str(e, "val", idclass_get_caption(idc, lang));
+    e = htsmsg_create_key_val(idc->ic_class, idclass_get_caption(idc, lang));
     htsmsg_add_msg(l, NULL, e);
     htsmsg_add_msg(m, "mpegts_network_types", l);
     if (mn)
@@ -650,6 +648,7 @@ mpegts_network_find_mux
   ( mpegts_network_t *mn, uint16_t onid, uint16_t tsid, int check )
 {
   mpegts_mux_t *mm;
+
   LIST_FOREACH(mm, &mn->mn_muxes, mm_network_link) {
     if (mm->mm_onid && onid && mm->mm_onid != onid) continue;
     if (mm->mm_tsid == tsid) {
@@ -658,6 +657,24 @@ mpegts_network_find_mux
     }
   }
   return mm;
+}
+
+mpegts_service_t *
+mpegts_network_find_active_service
+  ( mpegts_network_t *mn, uint16_t sid, mpegts_mux_t **rmm )
+{
+  mpegts_mux_t *mm;
+  mpegts_service_t *s;
+
+  LIST_FOREACH(mm, &mn->mn_muxes, mm_network_link) {
+    if (mm->mm_enabled != MM_ENABLE) continue;
+    s = mpegts_mux_find_service(mm, sid);
+    if (s && s->s_enabled) {
+      if (rmm) *rmm = mm;
+      return s;
+    }
+  }
+  return NULL;
 }
 
 /******************************************************************************

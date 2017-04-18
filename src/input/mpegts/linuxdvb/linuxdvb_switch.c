@@ -239,10 +239,10 @@ linuxdvb_switch_tune
       return -1;
 
     lsp->ls_last_toneburst = 0;
-    tvhtrace("diseqc", "toneburst %s", ls->ls_toneburst ? "B" : "A");
+    tvhtrace(LS_DISEQC, "toneburst %s", ls->ls_toneburst ? "B" : "A");
     if (ioctl(fd, FE_DISEQC_SEND_BURST,
               ls->ls_toneburst ? SEC_MINI_B : SEC_MINI_A)) {
-      tvherror("diseqc", "failed to set toneburst (e=%s)", strerror(errno));
+      tvherror(LS_DISEQC, "failed to set toneburst (e=%s)", strerror(errno));
       return -1;
     }
     lsp->ls_last_toneburst = ls->ls_toneburst + 1;
@@ -259,8 +259,8 @@ htsmsg_t *
 linuxdvb_switch_list ( void *o, const char *lang )
 {
   htsmsg_t *m = htsmsg_create_list();
-  htsmsg_add_str(m, NULL, tvh_gettext_lang(lang, N_("None")));
-  htsmsg_add_str(m, NULL, tvh_gettext_lang(lang, N_("Generic")));
+  htsmsg_add_msg(m, NULL, htsmsg_create_key_val("", tvh_gettext_lang(lang, N_("None"))));
+  htsmsg_add_msg(m, NULL, htsmsg_create_key_val("Generic", tvh_gettext_lang(lang, N_("Generic"))));
   return m;
 }
 

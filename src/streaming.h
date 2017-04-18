@@ -29,6 +29,7 @@ typedef struct streaming_start_component {
   int ssc_type;
   char ssc_lang[4];
   uint8_t ssc_audio_type;
+  uint8_t ssc_audio_version;
   uint16_t ssc_composition_id;
   uint16_t ssc_ancillary_id;
   uint16_t ssc_pid;
@@ -72,7 +73,7 @@ typedef struct streaming_start {
 void streaming_pad_init(streaming_pad_t *sp);
 
 void streaming_target_init(streaming_target_t *st,
-			   st_callback_t *cb, void *opaque,
+			   streaming_ops_t *ops, void *opaque,
 			   int reject_filter);
 
 void streaming_queue_init
@@ -106,7 +107,7 @@ streaming_message_t *streaming_msg_create_pkt(th_pkt_t *pkt);
 
 static inline void
 streaming_target_deliver(streaming_target_t *st, streaming_message_t *sm)
-  { st->st_cb(st->st_opaque, sm); }
+  { st->st_ops.st_cb(st->st_opaque, sm); }
 
 void streaming_target_deliver2(streaming_target_t *st, streaming_message_t *sm);
 
@@ -129,6 +130,7 @@ const char *streaming_code2txt(int code);
 
 streaming_start_component_t *streaming_start_component_find_by_index(streaming_start_t *ss, int idx);
 
-
+void streaming_init(void);
+void streaming_done(void);
 
 #endif /* STREAMING_H_ */

@@ -434,14 +434,14 @@ service_print_filter(service_t *t)
 
   TAILQ_FOREACH(st, &t->s_filt_components, es_filt_link) {
     if (LIST_EMPTY(&st->es_caids)) {
-      tvhinfo("service", "esfilter: \"%s\" %03d %05d %s %s",
+      tvhinfo(LS_SERVICE, "esfilter: \"%s\" %03d %05d %s %s",
               t->s_nicename, st->es_index, st->es_pid,
               streaming_component_type2txt(st->es_type),
               lang_code_get(st->es_lang));
     } else {
       LIST_FOREACH(ca, &st->es_caids, link)
         if (ca->use)
-          tvhinfo("service", "esfilter: \"%s\" %03d %05d %s %04x %06x",
+          tvhinfo(LS_SERVICE, "esfilter: \"%s\" %03d %05d %s %04x %06x",
                   t->s_nicename, st->es_index, st->es_pid,
                   streaming_component_type2txt(st->es_type),
                   ca->caid, ca->providerid);
@@ -542,7 +542,7 @@ filter:
           if (esf->esf_sindex && esf->esf_sindex != sindex)
             continue;
           if (esf->esf_log)
-            tvhlog(LOG_INFO, "service", "esfilter: \"%s\" %s %03d %03d %05d %04x %06x %s",
+            tvhinfo(LS_SERVICE, "esfilter: \"%s\" %s %03d %03d %05d %04x %06x %s",
               t->s_nicename, esfilter_class2txt(i), st->es_index,
               esf->esf_index, st->es_pid, esf->esf_caid, esf->esf_caprovider,
               esfilter_action2txt(esf->esf_action));
@@ -587,7 +587,7 @@ ca_ignore:
               service_build_filter_add(t, st, sta, &p);
             break;
           default:
-            tvhlog(LOG_DEBUG, "service", "Unknown esfilter action %d", esf->esf_action);
+            tvhdebug(LS_SERVICE, "Unknown esfilter action %d", esf->esf_action);
             break;
           }
         } else {
@@ -595,7 +595,7 @@ ca_ignore:
           if (esf->esf_sindex && esf->esf_sindex != sindex)
             continue;
           if (esf->esf_log)
-            tvhlog(LOG_INFO, "service", "esfilter: \"%s\" %s %03d %03d %05d %s %s %s",
+            tvhinfo(LS_SERVICE, "esfilter: \"%s\" %s %03d %03d %05d %s %s %s",
               t->s_nicename, esfilter_class2txt(i), st->es_index, esf->esf_index,
               st->es_pid, streaming_component_type2txt(st->es_type),
               lang_code_get(st->es_lang), esfilter_action2txt(esf->esf_action));
@@ -630,7 +630,7 @@ ignore:
               service_build_filter_add(t, st, sta, &p);
             break;
           default:
-            tvhlog(LOG_DEBUG, "service", "Unknown esfilter action %d", esf->esf_action);
+            tvhdebug(LS_SERVICE, "Unknown esfilter action %d", esf->esf_action);
             break;
           }
         }
@@ -681,7 +681,7 @@ service_start(service_t *t, int instance, int weight, int flags,
 
   lock_assert(&global_lock);
 
-  tvhtrace("service", "starting %s", t->s_nicename);
+  tvhtrace(LS_SERVICE, "starting %s", t->s_nicename);
 
   assert(t->s_status != SERVICE_RUNNING);
   t->s_streaming_status = 0;
@@ -739,13 +739,19 @@ service_find_instance
   idnode_list_mapping_t *ilm;
   service_instance_t *si, *next;
   profile_t *pro = prch ? prch->prch_pro : NULL;
-  int enlisted, r, r1;
+  int r, r1;
 
   lock_assert(&global_lock);
 
   /* Build list */
-  TAILQ_FOREACH(si, sil, si_link)
+  TAILQ_FOREACH(si, sil, si_link) {
     si->si_mark = 1;
+    if (flags & SUBSCRIPTION_SWSERVICE) {
+      TAILQ_FOREACH(next, sil, si_link)
+        if (next != si && si->si_s == next->si_s && si->si_error)
+          next->si_error = MAX(next->si_error, si->si_error);
+    }
+  }
 
   r = 0;
   if (ch) {
@@ -753,42 +759,40 @@ service_find_instance
       *error = SM_CODE_SVC_NOT_ENABLED;
       return NULL;
     }
-    enlisted = 0;
     LIST_FOREACH(ilm, &ch->ch_services, ilm_in2_link) {
       s = (service_t *)ilm->ilm_in1;
       if (s->s_is_enabled(s, flags)) {
         if (pro == NULL ||
             pro->pro_svfilter == PROFILE_SVF_NONE ||
             (pro->pro_svfilter == PROFILE_SVF_SD && service_is_sdtv(s)) ||
-            (pro->pro_svfilter == PROFILE_SVF_HD && service_is_hdtv(s))) {
+            (pro->pro_svfilter == PROFILE_SVF_HD && service_is_hdtv(s)) ||
+            (pro->pro_svfilter == PROFILE_SVF_UHD && service_is_uhdtv(s))) {
           r1 = s->s_enlist(s, ti, sil, flags, weight);
-          if (r1 == 0)
-            enlisted++;
-          else if (enlisted == 0)
+          if (r1 && r == 0)
             r = r1;
         }
       }
     }
-    if (enlisted == 0) {
+    /* find a valid instance */
+    TAILQ_FOREACH(si, sil, si_link)
+      if (!si->si_error) break;
+    if (si == NULL) {
       LIST_FOREACH(ilm, &ch->ch_services, ilm_in2_link) {
         s = (service_t *)ilm->ilm_in1;
         if (s->s_is_enabled(s, flags)) {
           r1 = s->s_enlist(s, ti, sil, flags, weight);
-          if (r1 == 0)
-            enlisted++;
-          else if (enlisted == 0)
+          if (r1 && r == 0)
             r = r1;
         }
       }
     }
+    TAILQ_FOREACH(si, sil, si_link)
+      if (!si->si_error) {
+        r = 0;
+        break;
+      }
   } else {
     r = s->s_enlist(s, ti, sil, flags, weight);
-  }
-
-  if (r) {
-    if (*error < r)
-      *error = r;
-    return NULL;
   }
 
   /* Clean */
@@ -796,6 +800,13 @@ service_find_instance
     next = TAILQ_NEXT(si, si_link);
     if(si->si_mark)
       service_instance_destroy(sil, si);
+  }
+
+  /* Error handling */
+  if (r) {
+    if (*error < r)
+      *error = r;
+    return NULL;
   }
 
   if (TAILQ_EMPTY(sil)) {
@@ -808,22 +819,24 @@ service_find_instance
   TAILQ_FOREACH(si, sil, si_link) {
     const char *name = ch ? channel_get_name(ch) : NULL;
     if (!name && s) name = s->s_nicename;
-    tvhdebug("service", "%d: %s si %p %s weight %d prio %d error %d",
+    tvhdebug(LS_SERVICE, "%d: %s si %p %s weight %d prio %d error %d",
              si->si_instance, name, si, si->si_source, si->si_weight, si->si_prio,
              si->si_error);
   }
 
   /* Already running? */
   TAILQ_FOREACH(si, sil, si_link)
-    if(si->si_s->s_status == SERVICE_RUNNING && si->si_error == 0) {
-      tvhtrace("service", "return already running %p", si);
+    if (si->si_s->s_status == SERVICE_RUNNING && si->si_error == 0) {
+      tvhtrace(LS_SERVICE, "return already running %p", si);
       return si;
     }
 
-  /* Forced */
-  TAILQ_FOREACH(si, sil, si_link)
-    if(si->si_weight < 0 && si->si_error == 0)
-      break;
+  /* Forced, handle priority settings */
+  si = NULL;
+  TAILQ_FOREACH(next, sil, si_link)
+    if (next->si_weight < 0 && next->si_error == 0)
+      if (si == NULL || next->si_prio > si->si_prio)
+        si = next;
 
   /* Idle */
   if (!si) {
@@ -857,9 +870,9 @@ service_find_instance
   }
 
   /* Start */
-  tvhtrace("service", "will start new instance %d", si->si_instance);
+  tvhtrace(LS_SERVICE, "will start new instance %d", si->si_instance);
   if (service_start(si->si_s, si->si_instance, weight, flags, timeout, postpone)) {
-    tvhtrace("service", "tuning failed");
+    tvhtrace(LS_SERVICE, "tuning failed");
     si->si_error = SM_CODE_TUNING_FAILED;
     if (*error < SM_CODE_TUNING_FAILED)
       *error = SM_CODE_TUNING_FAILED;
@@ -1013,7 +1026,7 @@ service_create0
 {
   if (idnode_insert(&t->s_id, uuid, class, 0)) {
     if (uuid)
-      tvherror("service", "invalid uuid '%s'", uuid);
+      tvherror(LS_SERVICE, "invalid uuid '%s'", uuid);
     free(t);
     return NULL;
   }
@@ -1326,6 +1339,10 @@ int
 service_is_encrypted(service_t *t)
 {
   elementary_stream_t *st;
+  if (((mpegts_service_t *)t)->s_dvb_forcecaid == 0xffff)
+    return 0;
+  if (((mpegts_service_t *)t)->s_dvb_forcecaid)
+    return 1;
   TAILQ_FOREACH(st, &t->s_components, es_link)
     if (st->es_type == SCT_CA)
       return 1;
@@ -1375,7 +1392,7 @@ service_set_streaming_status_flags_(service_t *t, int set)
 
   t->s_streaming_status = set;
 
-  tvhlog(LOG_DEBUG, "service", "%s: Status changed to %s%s%s%s%s%s%s%s%s",
+  tvhdebug(LS_SERVICE, "%s: Status changed to %s%s%s%s%s%s%s%s%s%s",
 	 service_nicename(t),
 	 set & TSS_INPUT_HARDWARE ? "[Hardware input] " : "",
 	 set & TSS_INPUT_SERVICE  ? "[Input on service] " : "",
@@ -1383,6 +1400,7 @@ service_set_streaming_status_flags_(service_t *t, int set)
 	 set & TSS_PACKETS        ? "[Reassembled packets] " : "",
 	 set & TSS_NO_DESCRAMBLER ? "[No available descrambler] " : "",
 	 set & TSS_NO_ACCESS      ? "[No access] " : "",
+	 set & TSS_CA_CHECK       ? "[CA check] " : "",
 	 set & TSS_TUNING         ? "[Tuning failed] " : "",
 	 set & TSS_GRACEPERIOD    ? "[Graceperiod expired] " : "",
 	 set & TSS_TIMEOUT        ? "[Data timeout] " : "");
@@ -1438,7 +1456,6 @@ refresh:
   descrambler_service_start(t);
 }
 
-
 /**
  * Generate a message containing info about all components
  */
@@ -1468,6 +1485,7 @@ service_build_stream_start(service_t *t)
 
     memcpy(ssc->ssc_lang, st->es_lang, 4);
     ssc->ssc_audio_type = st->es_audio_type;
+    ssc->ssc_audio_version = st->es_audio_version;
     ssc->ssc_composition_id = st->es_composition_id;
     ssc->ssc_ancillary_id = st->es_ancillary_id;
     ssc->ssc_pid = st->es_pid;
@@ -1764,10 +1782,10 @@ tss2errcode(int tss)
 void
 service_refresh_channel(service_t *t)
 {
-#if 0
-  if(t->s_ch != NULL)
-    htsp_channel_update(t->s_ch);
-#endif
+  idnode_list_mapping_t *ilm;
+  LIST_FOREACH(ilm, &t->s_channels, ilm_in1_link) {
+    htsp_channel_update((channel_t *)ilm->ilm_in2);
+  }
 }
 
 
@@ -1967,8 +1985,11 @@ void service_save ( service_t *t, htsmsg_t *m )
     if(st->es_lang[0])
       htsmsg_add_str(sub, "language", st->es_lang);
 
-    if (SCT_ISAUDIO(st->es_type))
+    if (SCT_ISAUDIO(st->es_type)) {
       htsmsg_add_u32(sub, "audio_type", st->es_audio_type);
+      if (st->es_audio_version)
+        htsmsg_add_u32(sub, "audio_version", st->es_audio_version);
+    }
 
     if(st->es_type == SCT_CA) {
       caid_t *c;
@@ -2006,6 +2027,23 @@ void service_save ( service_t *t, htsmsg_t *m )
   }
   pthread_mutex_unlock(&t->s_stream_mutex);
   htsmsg_add_msg(m, "stream", list);
+}
+
+/**
+ *
+ */
+void
+service_remove_unseen(const char *type, int days)
+{
+  service_t *s, *sn;
+  time_t before = gclk() - MAX(days, 5) * 24 * 3600;
+
+  lock_assert(&global_lock);
+  for (s = TAILQ_FIRST(&service_all); s; s = sn) {
+    sn = TAILQ_NEXT(s, s_all_link);
+    if (s->s_unseen && s->s_unseen(s, type, before))
+      service_destroy(s, 1);
+  }
 }
 
 /**
@@ -2150,6 +2188,8 @@ void service_load ( service_t *t, htsmsg_t *c )
       if (SCT_ISAUDIO(type)) {
         if(!htsmsg_get_u32(c, "audio_type", &u32))
           st->es_audio_type = u32;
+        if(!htsmsg_get_u32(c, "audio_version", &u32))
+          st->es_audio_version = u32;
       }
 
       if(!htsmsg_get_u32(c, "position", &u32))

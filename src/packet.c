@@ -52,12 +52,14 @@ pkt_destroy(th_pkt_t *pkt)
  * suppoed to take care of)
  */
 th_pkt_t *
-pkt_alloc(const void *data, size_t datalen, int64_t pts, int64_t dts)
+pkt_alloc(streaming_component_type_t type, const void *data, size_t datalen,
+          int64_t pts, int64_t dts)
 {
   th_pkt_t *pkt;
 
   pkt = calloc(1, sizeof(th_pkt_t));
   if (pkt) {
+    pkt->pkt_type = type;
     if(datalen)
       pkt->pkt_payload = pktbuf_alloc(data, datalen);
     pkt->pkt_dts = dts;
@@ -143,6 +145,41 @@ pkt_ref_inc_poly(th_pkt_t *pkt, int n)
   atomic_add(&pkt->pkt_refcount, n);
 }
 
+/**
+ *
+ */
+void
+pkt_trace_(const char *file, int line, int subsys, th_pkt_t *pkt,
+           const char *fmt, ...)
+{
+  char buf[512], _dts[22], _pts[22], _type[2];
+  va_list args;
+
+  va_start(args, fmt);
+  if (SCT_ISVIDEO(pkt->pkt_type) && pkt->v.pkt_frametype) {
+    _type[0] = pkt_frametype_to_char(pkt->v.pkt_frametype);
+    _type[1] = '\0';
+  } else {
+    _type[0] = '\0';
+  }
+  snprintf(buf, sizeof(buf),
+           "%s%spkt stream %d %s%s%s"
+           " dts %s pts %s"
+           " dur %d len %zu err %i%s",
+           fmt ? fmt : "",
+           fmt ? " (" : "",
+           pkt->pkt_componentindex,
+           streaming_component_type2txt(pkt->pkt_type),
+           _type[0] ? " type " : "", _type,
+           pts_to_string(pkt->pkt_dts, _dts),
+           pts_to_string(pkt->pkt_pts, _pts),
+           pkt->pkt_duration,
+           pktbuf_len(pkt->pkt_payload),
+           pkt->pkt_err,
+           fmt ? ")" : "");
+  tvhlogv(file, line, LOG_TRACE, subsys, buf, &args);
+  va_end(args);
+}
 
 /**
  *
@@ -326,4 +363,16 @@ pktbuf_append(pktbuf_t *pb, const void *data, size_t size)
     memoryinfo_append(&pktbuf_memoryinfo, size);
   }
   return pb;
+}
+
+/*
+ *
+ */
+
+const char *pts_to_string(int64_t pts, char *buf)
+{
+  if (pts == PTS_UNSET)
+    return strcpy(buf, "<unset>");
+  snprintf(buf, 22, "%"PRId64, pts);
+  return buf;
 }

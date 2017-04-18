@@ -123,9 +123,9 @@ dvr_autorec_completed(dvr_autorec_entry_t *dae, int error_code)
     if (count <= max_count)
       break;
     if (de_prev) {
-      tvhinfo("dvr", "autorec %s removing recordings %s (allowed count %u total %u)",
+      tvhinfo(LS_DVR, "autorec %s removing recordings %s (allowed count %u total %u)",
               dae->dae_name, idnode_uuid_as_str(&de_prev->de_id, ubuf), max_count, total);
-      dvr_entry_cancel_delete(de_prev, 0);
+      dvr_entry_cancel_remove(de_prev, 0);
     }
   }
 }
@@ -167,13 +167,17 @@ autorec_cmp(dvr_autorec_entry_t *dae, epg_broadcast_t *e)
     if(dae->dae_brand)
       if (!e->episode->brand || dae->dae_brand != e->episode->brand) return 0;
   }
+
   if(dae->dae_btype != DVR_AUTOREC_BTYPE_ALL) {
     if (dae->dae_btype == DVR_AUTOREC_BTYPE_NEW && e->is_repeat)
       return 0;
     if (dae->dae_btype == DVR_AUTOREC_BTYPE_REPEAT && e->is_repeat == 0)
       return 0;
   }
-  if(dae->dae_title != NULL && dae->dae_title[0] != '\0') {
+
+  /* Do not check title if the event is from the serieslink group */
+  if(dae->dae_serieslink == NULL &&
+     dae->dae_title != NULL && dae->dae_title[0] != '\0') {
     lang_str_ele_t *ls;
     if (!dae->dae_fulltext) {
       if(!e->episode->title) return 0;
@@ -280,7 +284,7 @@ dvr_autorec_create(const char *uuid, htsmsg_t *conf)
 
   if (idnode_insert(&dae->dae_id, uuid, &dvr_autorec_entry_class, 0)) {
     if (uuid)
-      tvhwarn("dvr", "invalid autorec entry uuid '%s'", uuid);
+      tvhwarn(LS_DVR, "invalid autorec entry uuid '%s'", uuid);
     free(dae);
     return NULL;
   }
@@ -289,6 +293,7 @@ dvr_autorec_create(const char *uuid, htsmsg_t *conf)
   dae->dae_pri = DVR_PRIO_NORMAL;
   dae->dae_start = -1;
   dae->dae_start_window = -1;
+  dae->dae_enabled = 1;
   dae->dae_config = dvr_config_find_by_name_default(NULL);
   LIST_INSERT_HEAD(&dae->dae_config->dvr_autorec_entries, dae, dae_config_link);
 
@@ -324,7 +329,7 @@ dvr_autorec_update_htsp(dvr_autorec_entry_t *dae, htsmsg_t *conf)
 {
   idnode_update(&dae->dae_id, conf);
   idnode_changed(&dae->dae_id);
-  tvhlog(LOG_INFO, "autorec", "\"%s\" on \"%s\": Updated", dae->dae_title ? dae->dae_title : "",
+  tvhinfo(LS_DVR, "autorec \"%s\" on \"%s\": Updated", dae->dae_title ? dae->dae_title : "",
       (dae->dae_channel && dae->dae_channel->ch_name) ? dae->dae_channel->ch_name : "any channel");
 }
 
@@ -404,11 +409,11 @@ autorec_entry_destroy(dvr_autorec_entry_t *dae, int delconf)
     LIST_REMOVE(dae, dae_channel_tag_link);
 
   if(dae->dae_brand)
-    dae->dae_brand->putref(dae->dae_brand);
+    dae->dae_brand->ops->putref(dae->dae_brand);
   if(dae->dae_season)
-    dae->dae_season->putref(dae->dae_season);
+    dae->dae_season->ops->putref(dae->dae_season);
   if(dae->dae_serieslink)
-    dae->dae_serieslink->putref(dae->dae_serieslink);
+    dae->dae_serieslink->ops->putref(dae->dae_serieslink);
 
   free(dae);
 }
@@ -820,12 +825,12 @@ dvr_autorec_entry_class_brand_set(void *o, const void *v)
   brand = v ? epg_brand_find_by_uri(v, NULL, 1, &save, NULL) : NULL;
   if (brand && dae->dae_brand != brand) {
     if (dae->dae_brand)
-      dae->dae_brand->putref((epg_object_t*)dae->dae_brand);
-    brand->getref((epg_object_t*)brand);
+      dae->dae_brand->ops->putref((epg_object_t*)dae->dae_brand);
+    brand->ops->getref((epg_object_t*)brand);
     dae->dae_brand = brand;
     return 1;
   } else if (brand == NULL && dae->dae_brand) {
-    dae->dae_brand->putref((epg_object_t*)dae->dae_brand);
+    dae->dae_brand->ops->putref((epg_object_t*)dae->dae_brand);
     dae->dae_brand = NULL;
     return 1;
   }
@@ -856,12 +861,12 @@ dvr_autorec_entry_class_season_set(void *o, const void *v)
   season = v ? epg_season_find_by_uri(v, NULL, 1, &save, NULL) : NULL;
   if (season && dae->dae_season != season) {
     if (dae->dae_season)
-      dae->dae_season->putref((epg_object_t*)dae->dae_season);
-    season->getref((epg_object_t*)season);
+      dae->dae_season->ops->putref((epg_object_t*)dae->dae_season);
+    season->ops->getref((epg_object_t*)season);
     dae->dae_season = season;
     return 1;
   } else if (season == NULL && dae->dae_season) {
-    dae->dae_season->putref((epg_object_t*)dae->dae_season);
+    dae->dae_season->ops->putref((epg_object_t*)dae->dae_season);
     dae->dae_season = NULL;
     return 1;
   }
@@ -892,12 +897,12 @@ dvr_autorec_entry_class_series_link_set(void *o, const void *v)
   sl = v ? epg_serieslink_find_by_uri(v, NULL, 1, &save, NULL) : NULL;
   if (sl && dae->dae_serieslink != sl) {
     if (dae->dae_serieslink)
-      dae->dae_serieslink->putref((epg_object_t*)dae->dae_season);
-    sl->getref((epg_object_t*)sl);
+      dae->dae_serieslink->ops->putref((epg_object_t*)dae->dae_season);
+    sl->ops->getref((epg_object_t*)sl);
     dae->dae_serieslink = sl;
     return 1;
   } else if (sl == NULL && dae->dae_serieslink) {
-    dae->dae_season->putref((epg_object_t*)dae->dae_season);
+    dae->dae_season->ops->putref((epg_object_t*)dae->dae_season);
     dae->dae_season = NULL;
     return 1;
   }
@@ -937,6 +942,8 @@ dvr_autorec_entry_class_dedup_list ( void *o, const char *lang )
         DVR_AUTOREC_RECORD_DIFFERENT_SUBTITLE },
     { N_("All: Record if different description"),
         DVR_AUTOREC_RECORD_DIFFERENT_DESCRIPTION },
+    { N_("All: Record once per month"),
+        DVR_AUTOREC_RECORD_ONCE_PER_MONTH },
     { N_("All: Record once per week"),
         DVR_AUTOREC_RECORD_ONCE_PER_WEEK },
     { N_("All: Record once per day"),
@@ -949,6 +956,8 @@ dvr_autorec_entry_class_dedup_list ( void *o, const char *lang )
         DVR_AUTOREC_LRECORD_DIFFERENT_SUBTITLE },
     { N_("Local: Record if different description"),
         DVR_AUTOREC_LRECORD_DIFFERENT_DESCRIPTION },
+    { N_("Local: Record once per month"),
+        DVR_AUTOREC_LRECORD_ONCE_PER_MONTH },
     { N_("Local: Record once per week"),
         DVR_AUTOREC_LRECORD_ONCE_PER_WEEK },
     { N_("Local: Record once per day"),
@@ -1000,6 +1009,7 @@ const idclass_t dvr_autorec_entry_class = {
       .id       = "enabled",
       .name     = N_("Enabled"),
       .desc     = N_("Enable/disable auto-rec rule."),
+      .def.i    = 1,
       .off      = offsetof(dvr_autorec_entry_t, dae_enabled),
     },
     {
@@ -1009,7 +1019,7 @@ const idclass_t dvr_autorec_entry_class = {
       .desc     = N_("The name of the the rule."),
       .off      = offsetof(dvr_autorec_entry_t, dae_name),
     },
-	{
+	  {
       .type     = PT_STR,
       .id       = "directory",
       .name     = N_("Directory"),
@@ -1019,6 +1029,7 @@ const idclass_t dvr_autorec_entry_class = {
                      "recordings done by this entry into the "
                      "subdirectory named here. See Help for more info."),
       .off      = offsetof(dvr_autorec_entry_t, dae_directory),
+      .opts     = PO_EXPERT,
     },
     {
       .type     = PT_STR,
@@ -1089,6 +1100,7 @@ const idclass_t dvr_autorec_entry_class = {
       .desc     = N_("An event which starts between this \"start after\" "
                      "and \"start before\" will be matched (including "
                      "boundary values)."),
+      .def.s    = N_("Any"),
       .set      = dvr_autorec_entry_class_start_set,
       .get      = dvr_autorec_entry_class_start_get,
       .list     = dvr_autorec_entry_class_time_list_,
@@ -1101,6 +1113,7 @@ const idclass_t dvr_autorec_entry_class = {
       .desc     = N_("An event which starts between this \"start after\" "
                      "and \"start before\" will be matched (including "
                      "boundary values)."),
+      .def.s    = N_("Any"),
       .set      = dvr_autorec_entry_class_start_window_set,
       .get      = dvr_autorec_entry_class_start_window_get,
       .list     = dvr_autorec_entry_class_time_list_,
@@ -1148,7 +1161,7 @@ const idclass_t dvr_autorec_entry_class = {
                      "shorter than this duration."),
       .list     = dvr_autorec_entry_class_minduration_list,
       .off      = offsetof(dvr_autorec_entry_t, dae_minduration),
-      .opts     = PO_ADVANCED | PO_DOC_NLIST,
+      .opts     = PO_EXPERT | PO_DOC_NLIST,
     },
     {
       .type     = PT_INT,
@@ -1159,7 +1172,7 @@ const idclass_t dvr_autorec_entry_class = {
                      "longer than this duration."),
       .list     = dvr_autorec_entry_class_maxduration_list,
       .off      = offsetof(dvr_autorec_entry_t, dae_maxduration),
-      .opts     = PO_ADVANCED | PO_DOC_NLIST,
+      .opts     = PO_EXPERT | PO_DOC_NLIST,
     },
     {
       .type     = PT_U32,
@@ -1188,8 +1201,8 @@ const idclass_t dvr_autorec_entry_class = {
       .type     = PT_U32,
       .id       = "retention",
       .name     = N_("DVR log retention"),
-      .desc     = N_("Number of days to retain infomation about recording."),
-      .def.i    = DVR_RET_DVRCONFIG,
+      .desc     = N_("Number of days to retain information about recording."),
+      .def.i    = DVR_RET_REM_DVRCONFIG,
       .off      = offsetof(dvr_autorec_entry_t, dae_retention),
       .list     = dvr_entry_class_retention_list,
       .opts     = PO_HIDDEN | PO_EXPERT | PO_DOC_NLIST,
@@ -1199,7 +1212,7 @@ const idclass_t dvr_autorec_entry_class = {
       .id       = "removal",
       .name     = N_("DVR file retention period"),
       .desc     = N_("Number of days to keep the recorded file."),
-      .def.i    = DVR_RET_DVRCONFIG,
+      .def.i    = DVR_RET_REM_DVRCONFIG,
       .off      = offsetof(dvr_autorec_entry_t, dae_removal),
       .list     = dvr_entry_class_removal_list,
       .opts     = PO_HIDDEN | PO_ADVANCED | PO_DOC_NLIST,
@@ -1506,13 +1519,8 @@ uint32_t
 dvr_autorec_get_retention_days( dvr_autorec_entry_t *dae )
 {
   if (dae->dae_retention > 0) {
-    if (dae->dae_retention > DVR_RET_FOREVER)
-      return DVR_RET_FOREVER;
-
-    uint32_t removal = dvr_autorec_get_removal_days(dae);
-    /* As we need the db entry when deleting the file on disk */
-    if (removal != DVR_RET_FOREVER && removal > dae->dae_retention)
-      return DVR_RET_ONREMOVE;
+    if (dae->dae_retention > DVR_RET_REM_FOREVER)
+      return DVR_RET_REM_FOREVER;
 
     return dae->dae_retention;
   }
@@ -1526,8 +1534,8 @@ uint32_t
 dvr_autorec_get_removal_days( dvr_autorec_entry_t *dae )
 {
   if (dae->dae_removal > 0) {
-    if (dae->dae_removal > DVR_RET_FOREVER)
-      return DVR_RET_FOREVER;
+    if (dae->dae_removal > DVR_RET_REM_FOREVER)
+      return DVR_RET_REM_FOREVER;
 
     return dae->dae_removal;
   }

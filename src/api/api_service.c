@@ -83,6 +83,8 @@ api_service_streams_get_one ( elementary_stream_t *es, int use_filter )
     htsmsg_add_u32(e, "ancillary_id",   es->es_ancillary_id);
   } else if (SCT_ISAUDIO(es->es_type)) {
     htsmsg_add_u32(e, "audio_type",     es->es_audio_type);
+    if (es->es_audio_version)
+      htsmsg_add_u32(e, "audio_version", es->es_audio_version);
   } else if (SCT_ISVIDEO(es->es_type)) {
     htsmsg_add_u32(e, "width",          es->es_width);
     htsmsg_add_u32(e, "height",         es->es_height);
@@ -160,6 +162,19 @@ api_service_streams
   return 0;
 }
 
+static int
+api_service_remove_unseen
+  ( access_t *perm, void *opaque, const char *op, htsmsg_t *args, htsmsg_t **resp )
+{
+  int days = htsmsg_get_s32_or_default(args, "days", 7);
+  const char *type = htsmsg_get_str(args, "type");
+
+  pthread_mutex_lock(&global_lock);
+  service_remove_unseen(type, days);
+  pthread_mutex_unlock(&global_lock);
+  return 0;
+}
+
 void api_service_init ( void )
 {
   extern const idclass_t service_class;
@@ -170,6 +185,7 @@ void api_service_init ( void )
     { "service/mapper/status",  ACCESS_ADMIN, api_mapper_status, NULL },
     { "service/list",           ACCESS_ADMIN, api_idnode_load_by_class, (void*)&service_class },
     { "service/streams",        ACCESS_ADMIN, api_service_streams, NULL },
+    { "service/removeunseen",   ACCESS_ADMIN, api_service_remove_unseen, NULL },
     { NULL },
   };
 

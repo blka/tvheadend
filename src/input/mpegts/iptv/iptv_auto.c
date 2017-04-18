@@ -120,7 +120,8 @@ iptv_auto_network_process_m3u_item(iptv_network_t *in,
 
   epgid = htsmsg_get_str(item, "tvg-id");
   epgcfg = _epgcfg_from_str(htsmsg_get_str(item, "tvh-epg"));
-  tags  = htsmsg_get_str(item, "tvh-tags");
+  tags = htsmsg_get_str(item, "tvh-tags");
+  if (!tags) tags = htsmsg_get_str(item, "group-title");
   if (tags) {
     tags = n = strdupa(tags);
     while (*n) {
@@ -170,8 +171,10 @@ iptv_auto_network_process_m3u_item(iptv_network_t *in,
         if (!htsbuf_empty(&q))
           htsbuf_append(&q, "&", 1);
         htsbuf_append_str(&q, ra1->key);
-        htsbuf_append(&q, "=", 1);
-        htsbuf_append_str(&q, ra1->val);
+        if (ra1->val) {
+          htsbuf_append(&q, "=", 1);
+          htsbuf_append_str(&q, ra1->val);
+        }
       }
       free(u.query);
       u.query = htsbuf_to_string(&q);
@@ -194,7 +197,10 @@ iptv_auto_network_process_m3u_item(iptv_network_t *in,
 
 skip_url:
   if (last_url) {
-    snprintf(n = name2, sizeof(name2), "%s - %s", last_url, name);
+    if (name[0])
+      snprintf(n = name2, sizeof(name2), "%s - %s", last_url, name);
+    else
+      n = (char *)last_url;
   } else {
     n = (char *)name;
   }
@@ -203,7 +209,7 @@ skip_url:
     im = (iptv_mux_t *)mm;
     if (strcmp(im->mm_iptv_url ?: "", url) == 0) {
       im->im_delete_flag = 0;
-      if (strcmp(im->mm_iptv_svcname ?: "", name ?: "")) {
+      if (strcmp(im->mm_iptv_svcname ?: "", name)) {
         free(im->mm_iptv_svcname);
         im->mm_iptv_svcname = strdup(name);
         change = 1;
@@ -235,7 +241,7 @@ skip_url:
       }
       if (strcmp(im->mm_iptv_tags ?: "", tags ?: "")) {
         free(im->mm_iptv_tags);
-        im->mm_iptv_tags = strdup(tags);
+        im->mm_iptv_tags = tags ? strdup(tags) : NULL;
         change = 1;
       }
       if (epgcfg >= 0 && im->mm_epg != epgcfg) {
@@ -273,6 +279,8 @@ skip_url:
     htsmsg_add_str(conf, "iptv_hdr", custom);
   if (epgcfg >= 0)
     htsmsg_add_s32(conf, "epg", epgcfg);
+  if (in->in_tsid_accept_zero_value)
+    htsmsg_add_s32(conf, "tsid_zero", 1);
   im = iptv_mux_create0(in, NULL, conf);
   htsmsg_destroy(conf);
 
@@ -315,7 +323,7 @@ iptv_auto_network_process_m3u(iptv_network_t *in, char *data,
   if (total == 0)
     ret = -1;
   else
-    tvhinfo("iptv", "m3u parse: %d new mux(es) in network '%s' (total %d)",
+    tvhinfo(LS_IPTV, "m3u parse: %d new mux(es) in network '%s' (total %d)",
             count, in->mn_network_name, total);
   return ret;
 }
@@ -367,11 +375,11 @@ iptv_auto_network_process(void *aux, const char *last_url,
       }
     }
     if (count > 0)
-      tvhinfo("iptv", "removed %d mux(es) from network '%s'", count, in->mn_network_name);
+      tvhinfo(LS_IPTV, "removed %d mux(es) from network '%s'", count, in->mn_network_name);
   } else {
     LIST_FOREACH(mm, &in->mn_muxes, mm_network_link)
       ((iptv_mux_t *)mm)->im_delete_flag = 0;
-    tvherror("iptv", "unknown playlist format for network '%s'", in->mn_network_name);
+    tvherror(LS_IPTV, "unknown playlist format for network '%s'", in->mn_network_name);
   }
 
   return -1;
@@ -423,7 +431,7 @@ iptv_auto_network_init( iptv_network_t *in )
   auto_private_t *ap = calloc(1, sizeof(auto_private_t));
   ap->in_network = in;
   in->in_auto = ap;
-  download_init(&ap->in_download, "iptv");
+  download_init(&ap->in_download, LS_IPTV);
   ap->in_download.process = iptv_auto_network_process;
   ap->in_download.stop = iptv_auto_network_stop;
   iptv_auto_network_trigger(in);

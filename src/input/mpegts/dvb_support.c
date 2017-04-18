@@ -82,13 +82,22 @@ static inline size_t conv_UCS2(const uint8_t *src, size_t srclen,char *dst, size
 {
   while (srclen>0 && (*dstlen)>0){
     uint16_t uc = *src<<8|*(src+1);
-    int len = encode_utf8(uc, dst, *dstlen);
-    if (len == -1) {
-      errno = E2BIG;
-      return -1;
+    if (uc >= 0xe080 && uc <= 0xe09f) {
+      // codes 0xe080 - 0xe09f (control codes) are ignored except CR/LF
+      if (uc == 0xe08a) {
+        *dst = '\n';
+        (*dstlen)--;
+        dst++;
+      }
     } else {
-      (*dstlen) -= len;
-      dst += len;
+      int len = encode_utf8(uc, dst, *dstlen);
+      if (len == -1) {
+        errno = E2BIG;
+        return -1;
+      } else {
+        (*dstlen) -= len;
+        dst += len;
+      }
     }
     srclen-=2;
     src+=2;
@@ -129,7 +138,12 @@ static inline size_t conv_8859(int conv,
       (*dstlen)--;
       dst++;
     } else if (c <= 0x9f) {
-      // codes 0x80 - 0x9f (control codes) are ignored
+      // codes 0x80 - 0x9f (control codes) are ignored except CR/LF
+      if (c == 0x8a) {
+        *dst = '\n';
+        (*dstlen)--;
+        dst++;
+      }
     } else {
       // map according to character table, skipping
       // unmapped chars (value 0 in the table)
@@ -166,7 +180,12 @@ static inline size_t conv_6937(const uint8_t *src, size_t srclen,
       (*dstlen)--;
       dst++;
     } else if (c <= 0x9f) {
-      // codes 0x80 - 0x9f (control codes) are ignored
+      // codes 0x80 - 0x9f (control codes) are ignored except CR/LF
+      if (c == 0x8a) {
+        *dst = '\n';
+        (*dstlen)--;
+        dst++;
+      }
     } else {
       uint16_t uc;
       if (c >= 0xc0 && c <= 0xcf) {
@@ -404,7 +423,7 @@ atsc_get_string
   char buf[256];
 
   stringcount = src[0];
-  tvhtrace("atsc-str", "%d strings", stringcount);
+  tvhtrace(LS_MPEGTS, "atsc-str: %d strings", stringcount);
 
   src++;
   srclen--;
@@ -417,7 +436,7 @@ atsc_get_string
     langcode[2]  = src[2];
     segmentcount = src[3];
 
-    tvhtrace("atsc-str", "  %d: lang '%s', segments %d", i, langcode, segmentcount);
+    tvhtrace(LS_MPEGTS, "atsc-str:  %d: lang '%s', segments %d", i, langcode, segmentcount);
 
     src    += 4;
     srclen -= 4;
@@ -434,7 +453,7 @@ atsc_get_string
         return ls;
 
       if (mode == 0 && compressiontype == 0) {
-        tvhtrace("atsc-str", "    %d: comptype 0x%02x, mode 0x%02x, %d bytes: '%.*s'",
+        tvhtrace(LS_MPEGTS, "atsc-str:    %d: comptype 0x%02x, mode 0x%02x, %d bytes: '%.*s'",
                  j, compressiontype, mode, bytecount, bytecount, src);
         memcpy(buf, src, bytecount);
         buf[bytecount] = '\0';
@@ -442,7 +461,7 @@ atsc_get_string
           ls = lang_str_create();
         lang_str_append(ls, buf, langcode);
       } else {
-        tvhtrace("atsc-str", "    %d: comptype 0x%02x, mode 0x%02x, %d bytes",
+        tvhtrace(LS_MPEGTS, "atsc-str:    %d: comptype 0x%02x, mode 0x%02x, %d bytes",
                  j, compressiontype, mode, bytecount);
       }
 
@@ -494,6 +513,10 @@ static struct strtab dvb_timezone_strtab[] = {
   { N_("UTC+10"),     10*60 },
   { N_("UTC+10:30"),  10*60+30 },
   { N_("UTC+11"),     11*60 },
+  { N_("UTC+12"),     12*60 },
+  { N_("UTC+12:45"),  12*60+45 },
+  { N_("UTC+13"),     13*60 },
+  { N_("UTC+14"),     14*60 }
 };
 
 htsmsg_t *
@@ -1045,6 +1068,32 @@ dvb_mux_conf_str_atsc_t ( dvb_mux_conf_t *dmc, char *buf, size_t bufsize )
            dvb_qam2str(dmc->dmc_fe_modulation));
 }
 
+static int
+dvb_mux_conf_str_isdb_t ( dvb_mux_conf_t *dmc, char *buf, size_t bufsize )
+{
+  char hp[16];
+  snprintf(hp, sizeof(hp), "%s", dvb_fec2str(dmc->u.dmc_fe_ofdm.code_rate_HP));
+  return
+  snprintf(buf, bufsize,
+           "%s freq %d bw %s guard %s A (%s,%s,%d,%d) B (%s,%s,%d,%d) C (%s,%s,%d,%d)",
+           dvb_delsys2str(dmc->dmc_fe_delsys),
+           dmc->dmc_fe_freq,
+           dvb_bw2str(dmc->u.dmc_fe_isdbt.bandwidth),
+           dvb_guard2str(dmc->u.dmc_fe_isdbt.guard_interval),
+           dvb_fec2str(dmc->u.dmc_fe_isdbt.layers[0].fec),
+           dvb_qam2str(dmc->u.dmc_fe_isdbt.layers[0].modulation),
+           dmc->u.dmc_fe_isdbt.layers[0].segment_count,
+           dmc->u.dmc_fe_isdbt.layers[0].time_interleaving,
+           dvb_fec2str(dmc->u.dmc_fe_isdbt.layers[1].fec),
+           dvb_qam2str(dmc->u.dmc_fe_isdbt.layers[1].modulation),
+           dmc->u.dmc_fe_isdbt.layers[1].segment_count,
+           dmc->u.dmc_fe_isdbt.layers[1].time_interleaving,
+           dvb_fec2str(dmc->u.dmc_fe_isdbt.layers[2].fec),
+           dvb_qam2str(dmc->u.dmc_fe_isdbt.layers[2].modulation),
+           dmc->u.dmc_fe_isdbt.layers[2].segment_count,
+           dmc->u.dmc_fe_isdbt.layers[2].time_interleaving);
+}
+
 int
 dvb_mux_conf_str ( dvb_mux_conf_t *dmc, char *buf, size_t bufsize )
 {
@@ -1056,11 +1105,14 @@ dvb_mux_conf_str ( dvb_mux_conf_t *dmc, char *buf, size_t bufsize )
     return dvb_mux_conf_str_dvbt(dmc, buf, bufsize);
   case DVB_TYPE_C:
   case DVB_TYPE_ATSC_C:
+  case DVB_TYPE_ISDB_C:
     return dvb_mux_conf_str_dvbc(dmc, buf, bufsize);
   case DVB_TYPE_S:
     return dvb_mux_conf_str_dvbs(dmc, buf, bufsize);
   case DVB_TYPE_ATSC_T:
     return dvb_mux_conf_str_atsc_t(dmc, buf, bufsize);
+  case DVB_TYPE_ISDB_T:
+    return dvb_mux_conf_str_isdb_t(dmc, buf, bufsize);
   default:
     return
       snprintf(buf, bufsize, "UNKNOWN MUX CONFIG");

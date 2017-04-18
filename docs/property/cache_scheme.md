@@ -1,11 +1,14 @@
 :
 
 Whenever you read or write data to the filesystems, the information is 
-kept (cached) in memory for a while. This means that regularly-access 
+kept (cached) in memory for a while. This means that regularly-accessed 
 files are available quickly without going back to the disc; it also 
 means that there’s a disconnect when writing between the write request 
 (from the application) and the actual write itself (to the disc/storage) 
 as changes are buffered to be written in one go.
+
+Warning, setting an incorrect scheme can lead to crashes. If you're 
+unsure select *System*.
 
 Scheme                 | Description 
 -----------------------|------------

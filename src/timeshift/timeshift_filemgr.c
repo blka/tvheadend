@@ -1,4 +1,4 @@
-/**
+/*
  *  TV headend - Timeshift File Manager
  *  Copyright (C) 2012 Adam Sutton
  *
@@ -65,39 +65,42 @@ static void* timeshift_reaper_callback ( void *p )
     pthread_mutex_unlock(&timeshift_reaper_lock);
 
     if (tsf->path) {
-      tvhtrace("timeshift", "remove file %s", tsf->path);
+      tvhtrace(LS_TIMESHIFT, "remove file %s", tsf->path);
 
       /* Remove */
       unlink(tsf->path);
       dpath = dirname(tsf->path);
       if (rmdir(dpath) == -1)
         if (errno != ENOTEMPTY)
-          tvhlog(LOG_ERR, "timeshift", "failed to remove %s [e=%s]",
-                 dpath, strerror(errno));
+          tvherror(LS_TIMESHIFT, "failed to remove %s [e=%s]", dpath, strerror(errno));
     } else {
-      tvhtrace("timeshift", "remove RAM segment (time %"PRId64", size %"PRId64")",
+      tvhtrace(LS_TIMESHIFT, "remove RAM segment (time %"PRId64", size %"PRId64")",
                tsf->time, (int64_t)tsf->size);
     }
 
     /* Free memory */
     while ((ti = TAILQ_FIRST(&tsf->iframes))) {
       TAILQ_REMOVE(&tsf->iframes, ti, link);
+      memoryinfo_free(&timeshift_memoryinfo, sizeof(*ti));
       free(ti);
     }
     while ((tid = TAILQ_FIRST(&tsf->sstart))) {
       TAILQ_REMOVE(&tsf->sstart, tid, link);
       sm = tid->data;
       streaming_msg_free(sm);
+      memoryinfo_free(&timeshift_memoryinfo, sizeof(*tid));
       free(tid);
     }
     free(tsf->path);
+    memoryinfo_free(&timeshift_memoryinfo_ram, tsf->ram_size);
     free(tsf->ram);
+    memoryinfo_free(&timeshift_memoryinfo, sizeof(*tsf));
     free(tsf);
 
     pthread_mutex_lock(&timeshift_reaper_lock);
   }
   pthread_mutex_unlock(&timeshift_reaper_lock);
-  tvhtrace("timeshift", "reaper thread exit");
+  tvhtrace(LS_TIMESHIFT, "reaper thread exit");
   return NULL;
 }
 
@@ -105,9 +108,9 @@ static void timeshift_reaper_remove ( timeshift_file_t *tsf )
 {
   if (tvhtrace_enabled()) {
     if (tsf->path)
-      tvhtrace("timeshift", "queue file for removal %s", tsf->path);
+      tvhtrace(LS_TIMESHIFT, "queue file for removal %s", tsf->path);
     else
-      tvhtrace("timeshift", "queue file for removal - RAM segment time %li", (long)tsf->time);
+      tvhtrace(LS_TIMESHIFT, "queue file for removal - RAM segment time %li", (long)tsf->time);
   }
   pthread_mutex_lock(&timeshift_reaper_lock);
   TAILQ_INSERT_TAIL(&timeshift_reaper_list, tsf, link);
@@ -125,11 +128,11 @@ timeshift_filemgr_dump0 ( timeshift_t *ts )
   timeshift_file_t *tsf;
 
   if (TAILQ_EMPTY(&ts->files)) {
-    tvhtrace("timeshift", "ts %d file dump - EMPTY", ts->id);
+    tvhtrace(LS_TIMESHIFT, "ts %d file dump - EMPTY", ts->id);
     return;
   }
   TAILQ_FOREACH(tsf, &ts->files, link) {
-    tvhtrace("timeshift", "ts %d (full=%d) file dump tsf %p time %4"PRId64" last %10"PRId64" bad %d refcnt %d",
+    tvhtrace(LS_TIMESHIFT, "ts %d (full=%d) file dump tsf %p time %4"PRId64" last %10"PRId64" bad %d refcnt %d",
              ts->id, ts->full, tsf, tsf->time, tsf->last, tsf->bad, tsf->refcount);
   }
 }
@@ -159,7 +162,7 @@ int timeshift_filemgr_makedirs ( int index, char *buf, size_t len )
   if (timeshift_filemgr_get_root(buf, len))
     return 1;
   snprintf(buf+strlen(buf), len-strlen(buf), "/%d", index);
-  return makedirs("timeshift", buf, 0700, 0, -1, -1);
+  return makedirs(LS_TIMESHIFT, buf, 0700, 0, -1, -1);
 }
 
 /*
@@ -179,6 +182,7 @@ void timeshift_filemgr_close ( timeshift_file_t *tsf )
     /* maintain unused memory block */
     ram = realloc(tsf->ram, tsf->woff);
     if (ram) {
+      memoryinfo_append(&timeshift_memoryinfo_ram, tsf->ram_size - tsf->woff);
       tsf->ram = ram;
       tsf->ram_size = tsf->woff;
     }
@@ -199,9 +203,9 @@ void timeshift_filemgr_remove
   assert(tsf->rfd < 0);
   if (tvhtrace_enabled()) {
     if (tsf->path)
-      tvhdebug("timeshift", "ts %d remove %s (size %"PRId64")", ts->id, tsf->path, (int64_t)tsf->size);
+      tvhdebug(LS_TIMESHIFT, "ts %d remove %s (size %"PRId64")", ts->id, tsf->path, (int64_t)tsf->size);
     else
-      tvhdebug("timeshift", "ts %d RAM segment remove time %"PRId64" (size %"PRId64", alloc size %"PRId64")",
+      tvhdebug(LS_TIMESHIFT, "ts %d RAM segment remove time %"PRId64" (size %"PRId64", alloc size %"PRId64")",
                ts->id, tsf->time, (int64_t)tsf->size, (int64_t)tsf->ram_size);
   }
   TAILQ_REMOVE(&ts->files, tsf, link);
@@ -239,6 +243,7 @@ static timeshift_file_t * timeshift_filemgr_file_init
   timeshift_file_t *tsf;
 
   tsf = calloc(1, sizeof(timeshift_file_t));
+  memoryinfo_alloc(&timeshift_memoryinfo, sizeof(*tsf));
   tsf->time     = mono2sec(start_time) / TIMESHIFT_FILE_PERIOD;
   tsf->last     = start_time;
   tsf->wfd      = -1;
@@ -290,7 +295,7 @@ timeshift_file_t *timeshift_filemgr_get ( timeshift_t *ts, int64_t start_time )
           timeshift_filemgr_remove(ts, tsf_hd, 0);
           tsf_hd = NULL;
         } else {
-          tvhlog(LOG_DEBUG, "timeshift", "ts %d buffer full", ts->id);
+          tvhdebug(LS_TIMESHIFT, "ts %d buffer full", ts->id);
           ts->full = 1;
         }
       }
@@ -306,7 +311,7 @@ timeshift_file_t *timeshift_filemgr_get ( timeshift_t *ts, int64_t start_time )
 
       /* Full */
       } else {
-        tvhlog(LOG_DEBUG, "timeshift", "ts %d buffer full", ts->id);
+        tvhdebug(LS_TIMESHIFT, "ts %d buffer full", ts->id);
         ts->full = 1;
       }
     }
@@ -315,7 +320,7 @@ timeshift_file_t *timeshift_filemgr_get ( timeshift_t *ts, int64_t start_time )
     tsf_tmp = NULL;
     if (!ts->full) {
 
-      tvhtrace("timeshift", "ts %d RAM total %"PRId64" requested %"PRId64" segment %"PRId64,
+      tvhtrace(LS_TIMESHIFT, "ts %d RAM total %"PRId64" requested %"PRId64" segment %"PRId64,
                    ts->id, atomic_pre_add_u64(&timeshift_total_ram_size, 0),
                    timeshift_conf.ram_size, timeshift_conf.ram_segment_size);
       while (1) {
@@ -329,16 +334,17 @@ timeshift_file_t *timeshift_filemgr_get ( timeshift_t *ts, int64_t start_time )
             free(tsf_tmp);
             tsf_tmp = NULL;
           } else {
-            tvhtrace("timeshift", "ts %d create RAM segment with %"PRId64" bytes (time %"PRId64")",
+            tvhtrace(LS_TIMESHIFT, "ts %d create RAM segment with %"PRId64" bytes (time %"PRId64")",
                      ts->id, tsf_tmp->ram_size, start_time);
             ts->ram_segments++;
+            memoryinfo_alloc(&timeshift_memoryinfo_ram, tsf_tmp->ram_size);
           }
           break;
         } else {
           tsf_hd = TAILQ_FIRST(&ts->files);
           if (timeshift_conf.ram_fit && tsf_hd && !tsf_hd->refcount &&
               tsf_hd->ram && ts->file_segments == 0) {
-            tvhtrace("timeshift", "ts %d remove RAM segment %"PRId64" (fit)", ts->id, tsf_hd->time);
+            tvhtrace(LS_TIMESHIFT, "ts %d remove RAM segment %"PRId64" (fit)", ts->id, tsf_hd->time);
             timeshift_filemgr_remove(ts, tsf_hd, 0);
           } else {
             break;
@@ -356,7 +362,7 @@ timeshift_file_t *timeshift_filemgr_get ( timeshift_t *ts, int64_t start_time )
 
         /* Create File */
         snprintf(path, sizeof(path), "%s/tvh-%"PRId64, ts->path, start_time);
-        tvhtrace("timeshift", "ts %d create file %s", ts->id, path);
+        tvhtrace(LS_TIMESHIFT, "ts %d create file %s", ts->id, path);
         if ((fd = tvh_open(path, O_WRONLY | O_CREAT, 0600)) > 0) {
           tsf_tmp = timeshift_filemgr_file_init(ts, start_time);
           tsf_tmp->wfd = fd;
@@ -368,10 +374,11 @@ timeshift_file_t *timeshift_filemgr_get ( timeshift_t *ts, int64_t start_time )
       if (tsf_tmp && tsf_tl) {
         /* Copy across last start message */
         if ((ti = TAILQ_LAST(&tsf_tl->sstart, timeshift_index_data_list)) || ts->smt_start) {
-          tvhtrace("timeshift", "ts %d copy smt_start to new file%s",
+          tvhtrace(LS_TIMESHIFT, "ts %d copy smt_start to new file%s",
                    ts->id, ti ? " (from last file)" : "");
           timeshift_index_data_t *ti2 = calloc(1, sizeof(timeshift_index_data_t));
           if (ti) {
+            memoryinfo_alloc(&timeshift_memoryinfo, sizeof(timeshift_index_data_t));
             sm = streaming_msg_clone(ti->data);
           } else {
             sm = streaming_msg_create(SMT_START);

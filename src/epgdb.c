@@ -20,6 +20,7 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <fcntl.h>
 #include <pthread.h>
 #include <signal.h>
 #include <setjmp.h>
@@ -142,7 +143,7 @@ _epgdb_v2_process( char **sect, htsmsg_t *m, epggrab_stats_t *stats )
 
   /* Unknown */
   } else {
-    tvhlog(LOG_DEBUG, "epgdb", "malformed database section [%s]", *sect);
+    tvhdebug(LS_EPGDB, "malformed database section [%s]", *sect);
     //htsmsg_print(m);
   }
 }
@@ -305,7 +306,7 @@ void epg_init ( void )
   if ( fd < 0 )
     fd = hts_settings_open_file(0, "epgdb");
   if ( fd < 0 ) {
-    tvhlog(LOG_DEBUG, "epgdb", "database does not exist");
+    tvhdebug(LS_EPGDB, "database does not exist");
     return;
   }
 
@@ -313,29 +314,29 @@ void epg_init ( void )
   act.sa_sigaction = epg_mmap_sigbus;
   act.sa_flags = SA_SIGINFO;
   if (sigaction(SIGBUS, &act, &oldact)) {
-    tvhlog(LOG_ERR, "epgdb", "failed to install SIGBUS handler");
+    tvherror(LS_EPGDB, "failed to install SIGBUS handler");
     close(fd);
     return;
   }
   
   /* Map file to memory */
   if ( fstat(fd, &st) != 0 ) {
-    tvhlog(LOG_ERR, "epgdb", "failed to detect database size");
+    tvherror(LS_EPGDB, "failed to detect database size");
     goto end;
   }
   if ( !st.st_size ) {
-    tvhlog(LOG_DEBUG, "epgdb", "database is empty");
+    tvhdebug(LS_EPGDB, "database is empty");
     goto end;
   }
   remain   = st.st_size;
   rp = mem = mmap(NULL, st.st_size, PROT_READ, MAP_SHARED, fd, 0);
   if ( mem == MAP_FAILED ) {
-    tvhlog(LOG_ERR, "epgdb", "failed to mmap database");
+    tvherror(LS_EPGDB, "failed to mmap database");
     goto end;
   }
 
   if (sigsetjmp(epg_mmap_env, 1)) {
-    tvhlog(LOG_ERR, "epgdb", "failed to read from mapped file");
+    tvherror(LS_EPGDB, "failed to read from mapped file");
     if (mem)
       munmap(mem, st.st_size);
     goto end;
@@ -344,12 +345,14 @@ void epg_init ( void )
 #if ENABLE_ZLIB
   if (remain > 12 && memcmp(rp, "\xff\xffGZIP00", 8) == 0) {
     uint32_t orig = (rp[8] << 24) | (rp[9] << 16) | (rp[10] << 8) | rp[11];
-    tvhlog(LOG_INFO, "epgdb", "gzip format detected, inflating (ratio %.1f%%)",
-           (float)((remain * 100.0) / orig));
+    tvhinfo(LS_EPGDB, "gzip format detected, inflating (ratio %.1f%% deflated size %zd)",
+           (float)((remain * 100.0) / orig), remain);
     rp = zlib_mem = tvh_gzip_inflate(rp + 12, remain - 12, orig);
     remain = rp ? orig : 0;
   }
 #endif
+
+  tvhinfo(LS_EPGDB, "parsing %zd bytes", remain);
 
   /* Process */
   memset(&stats, 0, sizeof(stats));
@@ -362,7 +365,7 @@ void epg_init ( void )
 
     /* Safety check */
     if ((int64_t)msglen > remain) {
-      tvhlog(LOG_ERR, "epgdb", "corruption detected, some/all data lost");
+      tvherror(LS_EPGDB, "corruption detected, some/all data lost");
       break;
     }
     
@@ -400,13 +403,13 @@ void epg_init ( void )
   }
 
   /* Stats */
-  tvhlog(LOG_INFO, "epgdb", "loaded v%d", ver);
-  tvhlog(LOG_INFO, "epgdb", "  config     %d", stats.config.total);
-  tvhlog(LOG_INFO, "epgdb", "  channels   %d", stats.channels.total);
-  tvhlog(LOG_INFO, "epgdb", "  brands     %d", stats.brands.total);
-  tvhlog(LOG_INFO, "epgdb", "  seasons    %d", stats.seasons.total);
-  tvhlog(LOG_INFO, "epgdb", "  episodes   %d", stats.episodes.total);
-  tvhlog(LOG_INFO, "epgdb", "  broadcasts %d", stats.broadcasts.total);
+  tvhinfo(LS_EPGDB, "loaded v%d", ver);
+  tvhinfo(LS_EPGDB, "  config     %d", stats.config.total);
+  //tvhinfo(LS_EPGDB, "  channels   %d", stats.channels.total);
+  tvhinfo(LS_EPGDB, "  brands     %d", stats.brands.total);
+  tvhinfo(LS_EPGDB, "  seasons    %d", stats.seasons.total);
+  tvhinfo(LS_EPGDB, "  episodes   %d", stats.episodes.total);
+  tvhinfo(LS_EPGDB, "  broadcasts %d", stats.broadcasts.total);
 
   /* Close file */
   munmap(mem, st.st_size);
@@ -467,26 +470,38 @@ static int _epg_write_sect ( sbuf_t *sb, const char *sect )
 
 static void epg_save_tsk_callback ( void *p, int dearmed )
 {
+  char tmppath[PATH_MAX];
+  char path[PATH_MAX];
   sbuf_t *sb = p;
-  size_t size = sb->sb_ptr;
+  size_t size = sb->sb_ptr, orig;
   int fd, r;
 
-  tvhinfo("epgdb", "save start");
-  fd = hts_settings_open_file(1, "epgdb.v%d", EPG_DB_VERSION);
+  tvhinfo(LS_EPGDB, "save start");
+  hts_settings_buildpath(path, sizeof(path), "epgdb.v%d", EPG_DB_VERSION);
+  snprintf(tmppath, sizeof(tmppath), "%s.tmp", path);
+  if (hts_settings_makedirs(tmppath))
+    fd = -1;
+  else
+    fd = tvh_open(tmppath, O_CREAT | O_TRUNC | O_WRONLY, S_IRUSR | S_IWUSR);
   if (fd >= 0) {
 #if ENABLE_ZLIB
     if (config.epg_compress) {
-      r = tvh_gzip_deflate_fd_header(fd, sb->sb_data, sb->sb_ptr, 3) < 0;
+      r = tvh_gzip_deflate_fd_header(fd, sb->sb_data, size, &orig, 3) < 0;
    } else
 #endif
-      r = tvh_write(fd, sb->sb_data, sb->sb_ptr);
+      r = tvh_write(fd, sb->sb_data, orig = size);
     close(fd);
-    if (r)
-      tvherror("epgdb", "write error (size %zd)", size);
-    else
-      tvhinfo("epgdb", "stored (size %zd)", size);
+    if (r) {
+      tvherror(LS_EPGDB, "write error (size %zd)", orig);
+      if (remove(tmppath))
+        tvherror(LS_EPGDB, "unable to remove file %s", tmppath);
+    } else {
+      tvhinfo(LS_EPGDB, "stored (size %zd)", orig);
+      if (rename(tmppath, path))
+        tvherror(LS_EPGDB, "unable to rename file %s to %s", tmppath, path);
+    }
   } else
-    tvherror("epgdb", "unable to open epgdb file");
+    tvherror(LS_EPGDB, "unable to open epgdb file");
   sbuf_free(sb);
   free(sb);
 }
@@ -508,7 +523,7 @@ void epg_save ( void )
   if (!sb)
     return;
 
-  tvhinfo("epgdb", "snapshot start");
+  tvhinfo(LS_EPGDB, "snapshot start");
 
   sbuf_init_fixed(sb, EPG_DB_ALLOC_STEP);
 
@@ -551,16 +566,16 @@ void epg_save ( void )
   tasklet_arm_alloc(epg_save_tsk_callback, sb);
 
   /* Stats */
-  tvhinfo("epgdb", "queued to save (size %d)", sb->sb_ptr);
-  tvhinfo("epgdb", "  brands     %d", stats.brands.total);
-  tvhinfo("epgdb", "  seasons    %d", stats.seasons.total);
-  tvhinfo("epgdb", "  episodes   %d", stats.episodes.total);
-  tvhinfo("epgdb", "  broadcasts %d", stats.broadcasts.total);
+  tvhinfo(LS_EPGDB, "queued to save (size %d)", sb->sb_ptr);
+  tvhinfo(LS_EPGDB, "  brands     %d", stats.brands.total);
+  tvhinfo(LS_EPGDB, "  seasons    %d", stats.seasons.total);
+  tvhinfo(LS_EPGDB, "  episodes   %d", stats.episodes.total);
+  tvhinfo(LS_EPGDB, "  broadcasts %d", stats.broadcasts.total);
 
   return;
 
 error:
-  tvhlog(LOG_ERR, "epgdb", "failed to store epg to disk");
+  tvherror(LS_EPGDB, "failed to store epg to disk");
   hts_settings_remove("epgdb.v%d", EPG_DB_VERSION);
   sbuf_free(sb);
   free(sb);

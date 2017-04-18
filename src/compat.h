@@ -15,8 +15,8 @@
  *  You should have received a copy of the GNU General Public License
  *  along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
-#ifndef COMPAT_H
-#define COMPAT_H
+#ifndef TVH_COMPAT_H
+#define TVH_COMPAT_H
 
 #if ENABLE_ANDROID
 #ifndef strdupa
@@ -35,14 +35,36 @@
 #define pthread_yield() sched_yield()
 #endif
 #define S_IEXEC S_IXUSR
-#define epoll_create1(EPOLL_CLOEXEC) epoll_create(n)
-#define inotify_init1(IN_CLOEXEC) inotify_init()
 #include <time64.h>
 // 32-bit Android has only timegm64() and not timegm().
 // We replicate the behaviour of timegm() when the result overflows time_t.
 
+#endif /* ENABLE_ANDROID */
+
+#ifndef ENABLE_EPOLL_CREATE1
+#define epoll_create1(EPOLL_CLOEXEC) epoll_create(n)
+#endif
+#ifndef ENABLE_INOTIFY_INIT1
+#define inotify_init1(IN_CLOEXEC) inotify_init()
+#endif
+#ifndef ENABLE_LLABS
+static inline long long int llabs(long long int a)
+{
+  if (a < 0) return -a; else return a;
+}
+#endif
+
+#endif /* TVH_COMPAT_H */
+
+#ifdef COMPAT_IPTOS
+
+#ifndef IPTOS_DSCP_MASK
 #define	IPTOS_DSCP_MASK		0xfc
+#endif
+#ifndef IPTOS_DSCP
 #define	IPTOS_DSCP(x)		((x) & IPTOS_DSCP_MASK)
+#endif
+#ifndef IPTOS_DSCP_AF11
 #define	IPTOS_DSCP_AF11		0x28
 #define	IPTOS_DSCP_AF12		0x30
 #define	IPTOS_DSCP_AF13		0x38
@@ -56,9 +78,15 @@
 #define	IPTOS_DSCP_AF42		0x90
 #define	IPTOS_DSCP_AF43		0x98
 #define	IPTOS_DSCP_EF		0xb8
+#endif
 
+#ifndef IPTOS_CLASS_MASK
 #define	IPTOS_CLASS_MASK	0xe0
+#endif
+#ifndef IPTOS_CLASS
 #define	IPTOS_CLASS(class)	((class) & IPTOS_CLASS_MASK)
+#endif
+#ifndef IPTOS_CLASS_CS0
 #define	IPTOS_CLASS_CS0		0x00
 #define	IPTOS_CLASS_CS1		0x20
 #define	IPTOS_CLASS_CS2		0x40
@@ -67,9 +95,9 @@
 #define	IPTOS_CLASS_CS5		0xa0
 #define	IPTOS_CLASS_CS6		0xc0
 #define	IPTOS_CLASS_CS7		0xe0
+#endif
 
 #define	IPTOS_CLASS_DEFAULT	IPTOS_CLASS_CS0
 
-#endif
+#endif /* COMPAT_IPTOS */
 
-#endif /* COMPAT_H */

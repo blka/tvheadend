@@ -58,6 +58,7 @@ OPTIONS=(
   "ccache:auto"
   "tvhcsa:auto"
   "bundle:no"
+  "pngquant:no"
   "dvbcsa:no"
   "dvben50221:auto"
   "kqueue:no"
@@ -163,6 +164,12 @@ check_cc_snippet atomic_time_t '#include <stdint.h>
 #include <time.h>
 uint64_t test(time_t *ptr){
 return __sync_fetch_and_add(ptr, 1);
+}'
+
+check_cc_snippet bitops64 '#include <stdint.h>
+int test(void){
+  int l = sizeof(long);
+  return l == 8 ? 0 : 1;
 }'
 
 check_cc_snippet lockowner '
@@ -276,6 +283,15 @@ int test(void)
 {
   struct if_nameindex *ifnames = if_nameindex();
   if_freenameindex(ifnames);
+  return 0;
+}
+'
+
+check_cc_snippet llabs '
+#include <stdlib.h>
+int test(void)
+{
+  llabs(-10);
   return 0;
 }
 '
@@ -542,6 +558,14 @@ fi
 if enabled_or_auto inotify; then
   if check_cc_header "sys/inotify" inotify_h; then
     enable inotify
+    check_cc_snippet inotify_init1 '
+    #include <sys/inotify.h>
+    int test(void)
+    {
+      inotify_init1(IN_CLOEXEC);
+      return 0;
+    }
+    '
   elif enabled inotify; then
     die "Inotify support not found (use --disable-inotify)"
   fi
@@ -594,6 +618,14 @@ fi
 #
 if [ ${PLATFORM} = "linux" ]; then
   enable epoll
+  check_cc_snippet epoll_create1 '
+  #include <sys/epoll.h>
+  int test(void)
+  {
+    epoll_create1(EPOLL_CLOEXEC);
+    return 0;
+  }
+  '
 fi
 
 #

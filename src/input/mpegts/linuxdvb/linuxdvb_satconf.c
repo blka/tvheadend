@@ -464,7 +464,7 @@ const idclass_t linuxdvb_satconf_en50494_class =
   .ic_super      = &linuxdvb_satconf_class,
   .ic_class      = "linuxdvb_satconf_en50494",
   .ic_doc        = tvh_doc_linuxdvb_satconf_class,
-  .ic_caption    = N_("TV Adapters - SatConfig - EN50494/UniCable (experimental)"),
+  .ic_caption    = N_("TV Adapters - SatConfig - EN50494/UniCable I"),
   .ic_properties = (const property_t[]) {
     {
       .type     = PT_U16,
@@ -517,6 +517,94 @@ const idclass_t linuxdvb_satconf_en50494_class =
       .set      = linuxdvb_satconf_class_network_set1,
       .list     = linuxdvb_satconf_class_network_enum,
       .rend     = linuxdvb_satconf_class_network_rend1,
+      .opts     = PO_NOSAVE,
+    },
+    {}
+  }
+};
+
+const idclass_t linuxdvb_satconf_en50607_class =
+{
+  .ic_super      = &linuxdvb_satconf_class,
+  .ic_class      = "linuxdvb_satconf_en50607",
+  .ic_doc        = tvh_doc_linuxdvb_satconf_class,
+  .ic_caption    = N_("TV Adapters - SatConfig - EN50607/UniCable II"),
+  .ic_properties = (const property_t[]) {
+    {
+      .type     = PT_U16,
+      .id       = "id",
+      .name     = N_("SCR (ID)"),
+      .desc     = N_("SCR (Satellite Channel Router) ID."),
+      .get      = linuxdvb_satconf_class_en50494_id_get,
+      .set      = linuxdvb_satconf_class_en50494_id_set,
+      .list     = linuxdvb_en50607_id_list,
+      .opts     = PO_NOSAVE,
+    },
+    {
+      .type     = PT_U16,
+      .id       = "pin",
+      .name     = N_("PIN"),
+      .desc     = N_("PIN."),
+      .get      = linuxdvb_satconf_class_en50494_pin_get,
+      .set      = linuxdvb_satconf_class_en50494_pin_set,
+      .list     = linuxdvb_en50494_pin_list,
+      .opts     = PO_NOSAVE,
+    },
+    {
+      .type     = PT_U16,
+      .id       = "frequency",
+      .name     = N_("Frequency (MHz)"),
+      .desc     = N_("Frequency (in MHz)."),
+      .get      = linuxdvb_satconf_class_en50494_freq_get,
+      .set      = linuxdvb_satconf_class_en50494_freq_set,
+      .opts     = PO_NOSAVE,
+    },
+    {
+      .type     = PT_STR,
+      .id       = "network_a",
+      .name     = N_("Network A"),
+      .desc     = N_("Network for port A."),
+      .islist   = 1,
+      .get      = linuxdvb_satconf_class_network_get0,
+      .set      = linuxdvb_satconf_class_network_set0,
+      .list     = linuxdvb_satconf_class_network_enum,
+      .rend     = linuxdvb_satconf_class_network_rend0,
+      .opts     = PO_NOSAVE,
+    },
+    {
+      .type     = PT_STR,
+      .id       = "network_b",
+      .name     = N_("Network B"),
+      .desc     = N_("Network for port B."),
+      .islist   = 1,
+      .get      = linuxdvb_satconf_class_network_get1,
+      .set      = linuxdvb_satconf_class_network_set1,
+      .list     = linuxdvb_satconf_class_network_enum,
+      .rend     = linuxdvb_satconf_class_network_rend1,
+      .opts     = PO_NOSAVE,
+    },
+    {
+      .type     = PT_STR,
+      .id       = "network_c",
+      .name     = N_("Network C"),
+      .desc     = N_("Network for port C."),
+      .islist   = 1,
+      .get      = linuxdvb_satconf_class_network_get2,
+      .set      = linuxdvb_satconf_class_network_set2,
+      .list     = linuxdvb_satconf_class_network_enum,
+      .rend     = linuxdvb_satconf_class_network_rend2,
+      .opts     = PO_NOSAVE,
+    },
+    {
+      .type     = PT_STR,
+      .id       = "network_d",
+      .name     = N_("Network D"),
+      .desc     = N_("Network for port D."),
+      .islist   = 1,
+      .get      = linuxdvb_satconf_class_network_get3,
+      .set      = linuxdvb_satconf_class_network_set3,
+      .list     = linuxdvb_satconf_class_network_enum,
+      .rend     = linuxdvb_satconf_class_network_rend3,
       .opts     = PO_NOSAVE,
     },
     {}
@@ -653,9 +741,15 @@ static struct linuxdvb_satconf_type linuxdvb_satconf_types[] = {
   },
   {
     .type  = "en50494",
-    .name  = N_("Unicable switch (universal LNB, experimental)"),
+    .name  = N_("Unicable I switch (universal LNB)"),
     .idc   = &linuxdvb_satconf_en50494_class,
     .ports = 2,
+  },
+  {
+    .type  = "en50607",
+    .name  = N_("Unicable II switch (universal LNB)"),
+    .idc   = &linuxdvb_satconf_en50607_class,
+    .ports = 4,
   },
   {
     .type  = "advanced",
@@ -758,16 +852,16 @@ linuxdvb_satconf_start ( linuxdvb_satconf_t *ls, int delay, int vol )
     return -1;
 
   if (ls->ls_last_tone_off != 1) {
-    tvhtrace("diseqc", "initial tone off");
+    tvhtrace(LS_DISEQC, "initial tone off");
     if (ioctl(linuxdvb_satconf_fe_fd(ls), FE_SET_TONE, SEC_TONE_OFF)) {
-      tvherror("diseqc", "failed to disable tone");
+      tvherror(LS_DISEQC, "failed to disable tone");
       return -1;
     }
     ls->ls_last_tone_off = 1;
   }
   /* the linuxdvb_diseqc_set_volt() fcn already sleeps for 15ms */
   if (delay > 15) {
-    tvhtrace("diseqc", "initial sleep %dms", delay);
+    tvhtrace(LS_DISEQC, "initial sleep %dms", delay);
     tvh_safe_usleep((delay-15)*1000);
   }
   return 0;
@@ -800,7 +894,7 @@ linuxdvb_satconf_ele_tune ( linuxdvb_satconf_ele_t *lse )
     band = lse->lse_lnb->lnb_band(lse->lse_lnb, lm) & 0x1;
     freq = lse->lse_lnb->lnb_freq(lse->lse_lnb, lm);
   } else {
-    tvherror("linuxdvb", "LNB is not defined!!!");
+    tvherror(LS_LINUXDVB, "LNB is not defined!!!");
     return -1;
   }
   if (!lse->lse_en50494) {
@@ -834,7 +928,7 @@ linuxdvb_satconf_ele_tune ( linuxdvb_satconf_ele_t *lse )
 
     /* Pending */
     if (r != 0) {
-      tvhtrace("diseqc", "waiting %d seconds to finish setup for %s", r, lds[i]->ld_type);
+      tvhtrace(LS_DISEQC, "waiting %d seconds to finish setup for %s", r, lds[i]->ld_type);
       mtimer_arm_rel(&ls->ls_diseqc_timer, linuxdvb_satconf_ele_tune_cb, lse, sec2mono(r));
       ls->ls_diseqc_idx = i + 1;
       return 0;
@@ -856,9 +950,9 @@ linuxdvb_satconf_ele_tune ( linuxdvb_satconf_ele_t *lse )
   if (!lse->lse_en50494) {
     if (ls->ls_last_tone_off != band + 1) {
       ls->ls_last_tone_off = 0;
-      tvhtrace("diseqc", "set diseqc tone %s", band ? "on" : "off");
+      tvhtrace(LS_DISEQC, "set diseqc tone %s", band ? "on" : "off");
       if (ioctl(lfe->lfe_fe_fd, FE_SET_TONE, band ? SEC_TONE_ON : SEC_TONE_OFF)) {
-        tvherror("diseqc", "failed to set diseqc tone (e=%s)", strerror(errno));
+        tvherror(LS_DISEQC, "failed to set diseqc tone (e=%s)", strerror(errno));
         return -1;
       }
       ls->ls_last_tone_off = band + 1;
@@ -900,7 +994,7 @@ linuxdvb_satconf_lnb_freq
   if (lse->lse_en50494) {
     f = lse->lse_en50494->ld_freq(lse->lse_en50494, lm, f);
     if (f < 0) {
-      tvherror("en50494", "invalid tuning freq");
+      tvherror(LS_EN50494, "invalid tuning freq");
       return -1;
     }
   }
@@ -985,20 +1079,20 @@ linuxdvb_satconf_match_mux
   char buf1[256], buf2[256];
   dvb_mux_conf_str(&lm1->lm_tuning, buf1, sizeof(buf1));
   dvb_mux_conf_str(&lm2->lm_tuning, buf2, sizeof(buf2));
-  tvhtrace("diseqc", "match mux 1 - %s", buf1);
-  tvhtrace("diseqc", "match mux 2 - %s", buf2);
+  tvhtrace(LS_DISEQC, "match mux 1 - %s", buf1);
+  tvhtrace(LS_DISEQC, "match mux 2 - %s", buf2);
 #endif
 
   if (lse1 != lse2) {
-    tvhtrace("diseqc", "match position failed");
+    tvhtrace(LS_DISEQC, "match position failed");
     return 0;
   }
   if (!lse1->lse_lnb->lnb_match(lse1->lse_lnb, lm1, lm2)) {
-    tvhtrace("diseqc", "match LNB failed");
+    tvhtrace(LS_DISEQC, "match LNB failed");
     return 0;
   }
   if (lse1->lse_en50494 && !lse1->lse_en50494->ld_match(lse1->lse_en50494, lm1, lm2)) {
-    tvhtrace("diseqc", "match en50494 failed");
+    tvhtrace(LS_DISEQC, "match en50494 failed");
     return 0;
   }
   return 1;
@@ -1078,7 +1172,10 @@ linuxdvb_satconf_create
     if (lst->ports > 1) {
       if (!strcmp(lst->type, "en50494")) {
         if (!lse->lse_en50494)
-          lse->lse_en50494 = linuxdvb_en50494_create0("Generic", NULL, lse, i);
+          lse->lse_en50494 = linuxdvb_en50494_create0(UNICABLE_I_NAME, NULL, lse, i);
+      } else if (!strcmp(lst->type, "en50607")) {
+        if (!lse->lse_en50494)
+          lse->lse_en50494 = linuxdvb_en50494_create0(UNICABLE_II_NAME, NULL, lse, i);
       } else {
         if (!lse->lse_switch)
           lse->lse_switch = linuxdvb_switch_create0("Generic", NULL, lse, i, -1);
@@ -1538,6 +1635,37 @@ linuxdvb_diseqc_destroy ( linuxdvb_diseqc_t *ld )
 }
 
 int
+linuxdvb_diseqc_raw_send
+  (int fd, uint8_t len, ...)
+{
+  int i;
+  va_list ap;
+  struct dvb_diseqc_master_cmd message;
+  char buf[256];
+  size_t c = 0;
+
+  /* Build message */
+  message.msg_len = len;
+  va_start(ap, len);
+  for (i = 0; i < len; i++) {
+    message.msg[i] = (uint8_t)va_arg(ap, int);
+    if (tvhtrace_enabled())
+      tvh_strlcatf(buf, sizeof(buf), c, "%02X ", message.msg[3 + i]);
+  }
+  va_end(ap);
+
+  if (tvhtrace_enabled())
+    tvhtrace(LS_DISEQC, "sending raw diseqc (len %d) %s", len, buf);
+
+  /* Send */
+  if (ioctl(fd, FE_DISEQC_SEND_MASTER_CMD, &message)) {
+    tvherror(LS_DISEQC, "failed to send diseqc cmd (e=%s)", strerror(errno));
+    return -1;
+  }
+  return 0;
+}
+
+int
 linuxdvb_diseqc_send
   (int fd, uint8_t framing, uint8_t addr, uint8_t cmd, uint8_t len, ...)
 {
@@ -1546,7 +1674,6 @@ linuxdvb_diseqc_send
   struct dvb_diseqc_master_cmd message;
   char buf[256];
   size_t c = 0;
-  int tr = tvhtrace_enabled();
 
   /* Build message */
   message.msg_len = len + 3;
@@ -1556,18 +1683,18 @@ linuxdvb_diseqc_send
   va_start(ap, len);
   for (i = 0; i < len; i++) {
     message.msg[3 + i] = (uint8_t)va_arg(ap, int);
-    if (tr)
+    if (tvhtrace_enabled())
       tvh_strlcatf(buf, sizeof(buf), c, "%02X ", message.msg[3 + i]);
   }
   va_end(ap);
 
-  if (tr)
-    tvhtrace("diseqc", "sending diseqc (len %d) %02X %02X %02X %s",
+  if (tvhtrace_enabled())
+    tvhtrace(LS_DISEQC, "sending diseqc (len %d) %02X %02X %02X %s",
              len + 3, framing, addr, cmd, buf);
 
   /* Send */
   if (ioctl(fd, FE_DISEQC_SEND_MASTER_CMD, &message)) {
-    tvherror("diseqc", "failed to send diseqc cmd (e=%s)", strerror(errno));
+    tvherror(LS_DISEQC, "failed to send diseqc cmd (e=%s)", strerror(errno));
     return -1;
   }
   return 0;
@@ -1580,10 +1707,10 @@ linuxdvb_diseqc_set_volt ( linuxdvb_satconf_t *ls, int vol )
   if (vol >= 0 && ls->ls_last_vol == vol + 1)
     return 0;
   /* Set voltage */
-  tvhtrace("diseqc", "set voltage %dV", vol ? (vol < 0 ? 0 : 18) : 13);
+  tvhtrace(LS_DISEQC, "set voltage %dV", vol ? (vol < 0 ? 0 : 18) : 13);
   if (ioctl(linuxdvb_satconf_fe_fd(ls), FE_SET_VOLTAGE,
             vol ? (vol < 0 ? SEC_VOLTAGE_OFF : SEC_VOLTAGE_18) : SEC_VOLTAGE_13)) {
-    tvherror("diseqc", "failed to set voltage (e=%s)", strerror(errno));
+    tvherror(LS_DISEQC, "failed to set voltage (e=%s)", strerror(errno));
     ls->ls_last_vol = 0;
     return -1;
   }

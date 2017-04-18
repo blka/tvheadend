@@ -35,8 +35,11 @@ static int
 mm_cmp ( mpegts_mux_t *a, mpegts_mux_t *b )
 {
   int r = b->mm_scan_weight - a->mm_scan_weight;
-  if (r == 0)
-    return mpegts_mux_compare(a, b);
+  if (r == 0) {
+    r = MINMAX(-1, 1, b->mm_start_monoclock - a->mm_start_monoclock);
+    if (r == 0)
+      return mpegts_mux_compare(a, b);
+  }
   return r;
 }
 
@@ -206,7 +209,7 @@ mpegts_network_scan_queue_del ( mpegts_mux_t *mm )
   }
   mpegts_mux_nice_name(mm, buf, sizeof(buf));
   mn->mn_display_name(mn, buf2, sizeof(buf2));
-  tvhdebug("mpegts", "%s - removing mux %s from scan queue", buf2, buf);
+  tvhdebug(LS_MPEGTS, "%s - removing mux %s from scan queue", buf2, buf);
   mm->mm_scan_state  = MM_SCAN_STATE_IDLE;
   mm->mm_scan_weight = 0;
   mtimer_disarm(&mm->mm_scan_timeout);
@@ -244,7 +247,7 @@ mpegts_network_scan_queue_add
 
   mpegts_mux_nice_name(mm, buf, sizeof(buf));
   mn->mn_display_name(mn, buf2, sizeof(buf2));
-  tvhdebug("mpegts", "%s - adding mux %s to scan queue weight %d flags %04X",
+  tvhdebug(LS_MPEGTS, "%s - adding mux %s to scan queue weight %d flags %04X",
            buf2, buf, weight, flags);
 
   /* Add new entry */
@@ -373,11 +376,11 @@ tsid_lookup:
         {
           char buf[256];
           mpegts_mux_nice_name(mm, buf, sizeof(buf));
-          tvhinfo("mpegts", "fastscan mux found '%s', set scan state 'PENDING'", buf);
+          tvhinfo(LS_MPEGTS, "fastscan mux found '%s', set scan state 'PENDING'", buf);
           mpegts_mux_scan_state_set(mm, MM_SCAN_STATE_PEND);
           return;
         }
-    tvhinfo("mpegts", "fastscan mux not found, position:%i, frequency:%i, polarisation:%c", satpos, freq, pol[0]);
+    tvhinfo(LS_MPEGTS, "fastscan mux not found, position:%i, frequency:%i, polarisation:%c", satpos, freq, pol[0]);
 
     // fastscan mux not found, try to add it automatically
     LIST_FOREACH(mn, &mpegts_network_all, mn_global_link)
@@ -405,7 +408,7 @@ tsid_lookup:
           char buf[256];
           idnode_changed(&mm->mm_id);
           mn->mn_display_name(mn, buf, sizeof(buf));
-          tvhinfo("mpegts", "fastscan mux add to network '%s'", buf);
+          tvhinfo(LS_MPEGTS, "fastscan mux add to network '%s'", buf);
         }
         free(mux);
       }
